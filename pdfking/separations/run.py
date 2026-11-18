@@ -19,6 +19,9 @@ DPI, K = 144, 2
 # the color each ink prints on white, full: the composites mix them
 INK_RGB = {"Cyan": (0, 174, 239), "Magenta": (236, 0, 140), "Yellow": (255, 242, 0), "Black": (35, 31, 32),
            "PANTONE 021 C": (254, 80, 0), "PANTONE 354 C": (0, 177, 64)}
+# a spot as process inks, its alternate in the test PDFs: for the CMYK composite
+SPOT_CMYK = {"PANTONE 021 C": (0, 0.53, 1, 0), "PANTONE 354 C": (0.8, 0, 0.9, 0)}
+CMYK_ICC = "/System/Library/ColorSync/Profiles/Generic CMYK Profile.icc"
 suite = sys.argv[1]
 only = sys.argv[2:]
 
@@ -104,6 +107,19 @@ for pdf in sorted(glob.glob(f"{suite}/pdf/*.pdf")):
             color = np.array(INK_RGB.get(plate, (128, 128, 128))) / 255
             rgb *= 1 - (ink[..., None] / 255) * (1 - color)
         Image.fromarray(np.round(rgb * 255).astype(np.uint8)).save(f"{out}/composite-{side}.png")
+        # and as a CMYK JPEG: the process plates as they are, each spot laid
+        # over them as its alternate, ink over ink (1 - (1 - a)(1 - b))
+        cmyk = np.zeros(planes[0][1].shape + (4,))
+        for plate, ink in planes:
+            amount = ink[..., None] / 255
+            if plate in SPOT_CMYK:
+                cmyk = 1 - (1 - cmyk) * (1 - amount * np.array(SPOT_CMYK[plate]))
+            else:
+                k = ["Cyan", "Magenta", "Yellow", "Black"].index(plate)
+                cmyk[..., k] = 1 - (1 - cmyk[..., k]) * (1 - amount[..., 0])
+        Image.fromarray(np.round(cmyk * 255).astype(np.uint8), "CMYK").save(
+            f"{out}/composite-{side}-cmyk.jpg", quality=100, subsampling=0,
+            icc_profile=open(CMYK_ICC, "rb").read())
     # the composites: what each shows of the page in RGB
     ca = np.asarray(Image.open(f"{out}/composite-gs.png").convert("RGB"), int)
     cb = np.asarray(Image.open(f"{out}/composite-pdfium.png").convert("RGB"), int)
@@ -117,6 +133,7 @@ for pdf in sorted(glob.glob(f"{suite}/pdf/*.pdf")):
         "composite-gs.png      gs plates merged: each ink printed over the others\n"
         "composite-pdfium.png  pdfium plates merged the same way\n"
         "composite-diff.png    |gs - pdfium| of the composites, x4\n"
+        "composite-*-cmyk.jpg  the plates as a CMYK JPEG (spots as their alternates), Generic CMYK profile\n"
         "render-gs.png         gs own color render (png16m), reference only\n"
         "render-pdfium.png     pdfium own color render, reference only\n"
         "N-<ink>-gs.png        ghostscript tiffsep plate (black = full ink)\n"
