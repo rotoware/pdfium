@@ -80,6 +80,23 @@
 
 namespace {
 
+// pdfking: on a plate, a form group the page shows through (not isolated)
+// with a soft mask or an opacity, composited Normal: ProcessForm paints it
+// on the page and mixes it with what was there (MixGroup), so its objects
+// blend with the page under them, as gs blends them
+bool PlateMixesGroup(CPDF_Document* doc,
+                     const CPDF_FormObject* form,
+                     bool has_bitmap) {
+  if (doc->GetPlate().IsEmpty() || !has_bitmap) {
+    return false;
+  }
+  const CPDF_GeneralState& state = form->general_state();
+  const CPDF_Transparency& group = form->form()->GetTransparency();
+  return group.IsGroup() && !group.IsIsolated() &&
+         state.GetBlendType() == BlendMode::kNormal &&
+         (state.GetSoftMask() || state.GetFillAlpha() != 1.0f);
+}
+
 // pdfking: whether an overprinting image is in inks all off the document's
 // plate, which it then leaves as it was. Its color space may be a resource
 // name (inline images). One with a soft mask knocks out, as gs paints it.
@@ -449,6 +466,22 @@ bool CPDF_RenderStatus::ProcessForm(const CPDF_FormObject* pFormObj,
   status.SetFormResource(std::move(pResources));
   status.SetInGroup(in_group_);
   status.Initialize(this, &pFormObj->graphic_states());
+  // the page under the group, to mix it back with (see PlateMixesGroup)
+  FX_RECT rect;
+  RetainPtr<CFX_DIBitmap> backdrop;
+  if (PlateMixesGroup(context_->GetDocument(), pFormObj,
+                      !!device_->GetBitmap())) {
+    rect = pFormObj->GetTransformedBBox(mtObj2Device);
+    rect.Intersect(device_->GetClipBox());
+    rect.Intersect(FX_RECT(0, 0, device_->GetBitmap()->GetWidth(),
+                           device_->GetBitmap()->GetHeight()));
+    if (rect.IsEmpty()) {
+      return true;
+    }
+    backdrop = device_->GetBitmap()->ClipTo(rect);
+    // its opacity is mixed in below, never on its objects too
+    status.SetInGroup(true);
+  }
   {
     CFX_RenderDevice::StateRestorer restorer(device_);
     if (pFormObj->form()->GetTransparency().IsKnockout() &&
@@ -459,7 +492,68 @@ bool CPDF_RenderStatus::ProcessForm(const CPDF_FormObject* pFormObj,
     }
     stopped_ = status.stopped_;
   }
+  if (backdrop) {
+    MixGroup(pFormObj, mtObj2Device, rect, backdrop);
+  }
   return true;
+}
+
+// pdfking: the group painted on the page, mixed with the page as it was by
+// its soft mask times its opacity, `w`: P = (1 - w) P0 + w Pn, alpha and
+// alpha-weighted color. ISO 32000-2 11.4.8's backdrop removal then
+// compositing come to that (the group's alpha over the backdrop's is w
+// times what the group adds)
+void CPDF_RenderStatus::MixGroup(const CPDF_FormObject* pFormObj,
+                                 const CFX_Matrix& mtObj2Device,
+                                 const FX_RECT& rect,
+                                 RetainPtr<CFX_DIBitmap> backdrop) {
+  RetainPtr<CFX_DIBitmap> device = device_->GetBitmap();
+  RetainPtr<CFX_DIBitmap> mask;
+  RetainPtr<CPDF_Dictionary> smask_dict =
+      const_cast<CPDF_FormObject*>(pFormObj)
+          ->mutable_general_state()
+          .GetMutableSoftMask();
+  if (smask_dict) {
+    mask = LoadSMask(smask_dict.Get(), rect,
+                     *pFormObj->general_state().GetSMaskMatrix() *
+                         mtObj2Device);
+  }
+  const int alpha =
+      FXSYS_roundf(pFormObj->general_state().GetFillAlpha() * 255);
+  const size_t bytes = device->GetBPP() / 8;
+  // alpha last when there is one, and the color not already weighted by it
+  const bool weigh = device->IsAlphaFormat() && !device->IsPremultiplied();
+  for (int row = 0; row < rect.Height(); ++row) {
+    pdfium::span<const uint8_t> before = backdrop->GetScanline(row);
+    pdfium::span<uint8_t> after =
+        device->GetWritableScanline(rect.top + row).subspan(rect.left * bytes);
+    pdfium::span<const uint8_t> m =
+        mask ? mask->GetScanline(row) : pdfium::span<const uint8_t>();
+    for (size_t col = 0; col < static_cast<size_t>(rect.Width()); ++col) {
+      // w out of 255 * 255
+      const int w = (mask ? m[col] : 255) * alpha;
+      const int v = 255 * 255 - w;
+      const uint8_t* b = before.subspan(col * bytes).data();
+      uint8_t* a = after.subspan(col * bytes).data();
+      if (!weigh) {
+        for (size_t i = 0; i < bytes; ++i) {
+          UNSAFE_TODO(a[i] = (b[i] * v + a[i] * w + 32512) / 65025);
+        }
+        continue;
+      }
+      UNSAFE_TODO({
+        const int a0 = b[3];
+        const int an = a[3];
+        const int af = (a0 * v + an * w + 32512) / 65025;
+        for (int i = 0; i < 3; ++i) {
+          const int64_t p = int64_t{b[i]} * a0 * v + int64_t{a[i]} * an * w;
+          const int64_t d = int64_t{af} * 65025;
+          a[i] = af ? static_cast<uint8_t>((p + d / 2) / d) : 0;
+        }
+        a[3] = static_cast<uint8_t>(af);
+      });
+    }
+  }
 }
 
 // pdfking: a knockout group (ISO 32000-2 11.4.6.2): each object painted on
@@ -819,6 +913,11 @@ bool CPDF_RenderStatus::ProcessTransparency(CPDF_PageObject* pPageObj,
         pPageObj->AsImage()->GetImage()->GetDict()->KeyExist("SMask")) {
       pSMaskDict = nullptr;
     }
+  }
+  if (pPageObj->IsForm() &&
+      PlateMixesGroup(context_->GetDocument(), pPageObj->AsForm(),
+                      !!device_->GetBitmap())) {
+    return false;
   }
   RetainPtr<const CPDF_Dictionary> pFormResource;
   float group_alpha = 1.0f;
