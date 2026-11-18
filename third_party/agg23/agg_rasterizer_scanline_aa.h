@@ -293,7 +293,8 @@ public:
             }
         }
         if (no_smooth) {
-            cover = cover > aa_mask / 2 ? aa_mask : 0;
+            // pdfking: any part of the pixel covered inks it, as gs fills
+            cover = cover > 0 ? aa_mask : 0;
         }
         if(cover > aa_mask) {
             cover = aa_mask;

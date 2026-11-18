@@ -686,7 +686,8 @@ bool CFX_RenderDevice::DrawPath(const CFX_Path& path,
           }
         }
       }
-      if (rect_i.Width() > width) {
+      // pdfking: aliased, every pixel the rect touches, as gs fills
+      if (rect_i.Width() > width && !fill_options.aliased_path) {
         if (rect_f.left - static_cast<float>(rect_i.left) >
             static_cast<float>(rect_i.right) - rect_f.right) {
           if (!pdfium::CheckAdd(rect_i.left, 1).AssignIfValid(&rect_i.left)) {
@@ -698,7 +699,7 @@ bool CFX_RenderDevice::DrawPath(const CFX_Path& path,
           }
         }
       }
-      if (rect_i.Height() > height) {
+      if (rect_i.Height() > height && !fill_options.aliased_path) {
         if (rect_f.top - static_cast<float>(rect_i.top) >
             static_cast<float>(rect_i.bottom) - rect_f.bottom) {
           if (!pdfium::CheckAdd(rect_i.top, 1).AssignIfValid(&rect_i.top)) {
