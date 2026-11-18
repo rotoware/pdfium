@@ -25,13 +25,14 @@ Known differences left (everything else byte-identical, plates in cells):
   colors on a page until a spot color has been painted on it: before, a
   process color knocks the others out (00-sheet: the first three rows,
   over cyan; a CMYK-only page: everywhere). pdfium overprints per the spec.
-- gs tiffsep only, pam right: a 1-bit image (gray, indexed, CCITT,
+- gs (tiffsep, and pam with /simulate): a 1-bit image (gray, indexed, CCITT,
   JBIG2) with ca < 1 or a blend mode is painted as its 0 color over the
   whole image, then the 1 pixels.
 - Lab: gs converts through ICC with black generation, pdfium does not.
 - `/Interpolate true`: gs smooths the image, pdfium (no smoothing) not.
 - shadings: pdfium steps them in 256, radial off up to 12.
 - knockout groups (pdfium has none), soft masks under a moved CTM (pdfium
-  drops them), a 1px stroke edge under overprint.
+  drops them), strokes: gs paints the pixel the edge lies on, pdfium does not (one
+  pixel wider in gs).
 - composites: gs renders CMYK + spots and converts to RGB (a print
   preview), pdfium renders in RGB.
