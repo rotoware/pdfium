@@ -771,9 +771,54 @@ def text():
             d.cell(r, c, f"{under}\nq 0 0 {CELL} {CELL} re W n {paint} BT /T{f} {size} Tf 2 {CELL / 5} Td (Rag) Tj ET Q")
     return d
 
+
+# ── 13 text overprinted: 07-overprint's cases as text, ever bigger ───────
+# each box the base of 07 (CMYK .3, 021 .5 overprinted), then "Rag" painted
+# as the row says: knocked out, its plates must keep exactly the glyph's
+# pixels out (no paper showing round it); overprinted, the others untouched
+TEXT_OP_SIZES = [2, 3, 4, 6, 8, 10, 12, 18, 24, 48]
+
+
+def text_overprint():
+    d = Doc([], [f"{s}pt" for s in TEXT_OP_SIZES])
+    s021, s354 = d.spots()
+    sn = d.devicen()
+    font(d, "TArial", FONTS["Arial"])
+    none = d.add("ColorSpace", "SNone", d.obj("[/Separation /None /DeviceCMYK << /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [0 0 0 1] /N 1 >>]"))
+    allcs = d.add("ColorSpace", "SAll", d.obj("[/Separation /All /DeviceCMYK << /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [1 1 1 1] /N 1 >>]"))
+    op1 = d.gs("OP1", "<< /OP true /op true /OPM 1 >>")
+    op0 = d.gs("OP0", "<< /OP true /op true /OPM 0 >>")
+    sop = d.gs("SOP", "<< /OP true /op true /OPM 1 >>")
+    rows = [("knockout k K", None, "0 0 0 1 k"),
+            ("knockout rgb red", None, "1 0 0 rg"),
+            ("knockout white", None, "0 0 0 0 k"),
+            ("knockout 354", None, f"/{s354} cs 1 scn"),
+            ("OPM0 k K", op0, "0 0 0 1 k"),
+            ("OPM1 k K", op1, "0 0 0 1 k"),
+            ("OPM1 k C.5", op1, "0.5 0 0 0 k"),
+            ("OPM1 k M Y red", op1, "0 1 1 0 k"),
+            ("OPM1 g", op1, "0 g"),
+            ("OPM1 rgb red", op1, "1 0 0 rg"),
+            ("OP 354", op1, f"/{s354} cs 1 scn"),
+            ("OP 021 same", op1, f"/{s021} cs 1 scn"),
+            ("OP DeviceN", op1, f"/{sn} cs 0 1 scn"),
+            ("OP None", op1, f"/{none} cs 1 scn"),
+            ("OP All .5", op1, f"/{allcs} cs 0.5 scn"),
+            ("OPM1 K stroked .3pt", sop, "0 0 0 1 K 0.3 w 1 Tr"),
+            ("OPM1 K fill+stroke .3pt", sop, "0 0 0 1 k 0 0 0 1 K 0.3 w 2 Tr"),
+            ("knockout K stroked .3pt", None, "0 0 0 1 K 0.3 w 1 Tr")]
+    d.rows = [r[0] for r in rows]
+    base = f"0.3 0.3 0.3 0.3 k {box()}\nq /{op1} gs /{s021} cs 0.5 scn {box()} Q"
+    for r, (label, g, paint) in enumerate(rows):
+        for c, size in enumerate(TEXT_OP_SIZES):
+            d.cell(r, c, f"{base}\nq 0 0 {CELL} {CELL} re W n {'/%s gs ' % g if g else ''}{paint}"
+                         f" BT /TArial {size} Tf 2 {CELL / 5} Td (Rag) Tj ET Q")
+    return d
+
+
 TESTS = [("00-sheet", sheet), ("01-tints", tints), ("02-blends", blends), ("03-rgb-gray-cie-vectors", rgb_vectors),
          ("04-images-process-gray", images_process), ("05-images-rgb", images_rgb), ("06-images-spot", images_spot),
-         ("07-overprint", overprint), ("08-shadings", shadings), ("09-groups-softmasks", groups), ("10-icc", icc), ("11-images", images), ("12-text", text)]
+         ("07-overprint", overprint), ("08-shadings", shadings), ("09-groups-softmasks", groups), ("10-icc", icc), ("11-images", images), ("12-text", text), ("13-text-overprint", text_overprint)]
 
 if __name__ == "__main__":
     out = sys.argv[1]
