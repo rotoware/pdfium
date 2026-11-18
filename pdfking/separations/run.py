@@ -45,7 +45,7 @@ for pdf in sorted(glob.glob(f"{suite}/pdf/*.pdf")):
     shutil.rmtree(work, ignore_errors=True)
     os.makedirs(out)
     os.makedirs(work)
-    shutil.copy(pdf, out)
+    shutil.copy(pdf, f"{out}/0-original-{test}.pdf")  # first in the folder
     gsargs = ["gs", "-q", "-dBATCH", "-dNOPAUSE", "-dUseFastColor", "-dOverprint=/simulate", f"-r{DPI}"]
     subprocess.run(gsargs + ["-sDEVICE=tiffsep", f"-sOutputFile={work}/gs.tif", pdf], check=True)
     subprocess.run(gsargs + ["-sDEVICE=png16m", f"-sOutputFile={out}/composite-gs.png", pdf], check=True)
@@ -96,6 +96,7 @@ for pdf in sorted(glob.glob(f"{suite}/pdf/*.pdf")):
         summary.append(line)
         print("  ", line)
     open(f"{out}/README.txt", "w").write(
+        "0-original-<test>.pdf the test PDF\n"
         "composite-gs.png      ghostscript color render (png16m, -dUseFastColor, 144dpi)\n"
         "composite-pdfium.png  pdfium color render (144dpi)\n"
         "composite-diff.png    |gs - pdfium| of the composites, x4\n"
