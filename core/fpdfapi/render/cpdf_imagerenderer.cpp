@@ -116,6 +116,10 @@ bool CPDF_ImageRenderer::StartRenderDIBBase() {
       }
     }
     fill_argb_ = render_status_->GetFillArgb(image_object_);
+    // pdfking: the fill color carries the opacity already, not twice
+    if (!pattern_color_) {
+      alpha_ = 1.0f;
+    }
   } else if (GetRenderOptions().ColorModeIs(CPDF_RenderOptions::kGray)) {
     RetainPtr<CFX_DIBitmap> pClone = dibbase_->Realize();
     if (!pClone) {

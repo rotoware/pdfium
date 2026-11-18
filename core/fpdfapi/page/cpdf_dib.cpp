@@ -691,6 +691,19 @@ RetainPtr<CFX_DIBitmap> CPDF_DIB::LoadJpxBitmap(
     return nullptr;
   }
 
+  // pdfking: with no color space given, on a plate the one the JPX's
+  // channels are in, as gs reads it: gray, CMYK or RGB
+  if (!color_space_ && !is_mask_ && !document_->GetPlate().IsEmpty() &&
+      (image_info.channels == 1 || image_info.channels == 3 ||
+       (image_info.channels == 4 && image_info.colorspace == OPJ_CLRSPC_CMYK))) {
+    color_space_ = PlateColorSpace(
+        CPDF_ColorSpace::GetStockCS(
+            image_info.channels == 1   ? CPDF_ColorSpace::Family::kDeviceGray
+            : image_info.channels == 3 ? CPDF_ColorSpace::Family::kDeviceRGB
+                                       : CPDF_ColorSpace::Family::kDeviceCMYK),
+        document_->GetPlate());
+    components_ = color_space_->ComponentCount();
+  }
   auto maybe_conversion =
       JpxDecodeConversion::Create(image_info, color_space_.Get());
   if (!maybe_conversion.has_value()) {

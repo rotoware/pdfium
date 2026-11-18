@@ -80,18 +80,33 @@
 namespace {
 
 // pdfking: whether an overprinting image is in inks all off the document's
-// plate, which it then leaves as it was
-bool PlateLeavesImage(CPDF_Document* doc, CPDF_ImageObject* image) {
+// plate, which it then leaves as it was. Its color space may be a resource
+// name (inline images). One with a soft mask knocks out, as gs paints it.
+bool PlateLeavesImage(CPDF_Document* doc,
+                      CPDF_ImageObject* image,
+                      const CPDF_Dictionary* form_resources,
+                      const CPDF_Dictionary* page_resources) {
   const ByteString& plate = doc->GetPlate();
   if (plate.IsEmpty() || !image->general_state().GetFillOP()) {
     return false;
   }
-  RetainPtr<const CPDF_Object> cs_obj =
-      image->GetImage()->GetDict()->GetDirectObjectFor("ColorSpace");
-  RetainPtr<CPDF_ColorSpace> cs =
-      cs_obj ? CPDF_DocPageData::FromDocument(doc)->GetColorSpace(cs_obj.Get(),
-                                                                  nullptr)
-             : nullptr;
+  RetainPtr<const CPDF_Dictionary> dict = image->GetImage()->GetDict();
+  if (dict->KeyExist("SMask")) {
+    return false;
+  }
+  RetainPtr<const CPDF_Object> cs_obj = dict->GetDirectObjectFor("ColorSpace");
+  // none but an image mask's: a JPX's own, process colors
+  if (!cs_obj) {
+    return !dict->GetBooleanFor("ImageMask", false) && PlateIsSpot(plate);
+  }
+  auto* page_data = CPDF_DocPageData::FromDocument(doc);
+  RetainPtr<CPDF_ColorSpace> cs;
+  if (form_resources) {
+    cs = page_data->GetColorSpace(cs_obj.Get(), form_resources);
+  }
+  if (!cs) {
+    cs = page_data->GetColorSpace(cs_obj.Get(), page_resources);
+  }
   return cs && !PlateMarked(cs.Get(), plate);
 }
 
@@ -300,7 +315,8 @@ bool CPDF_RenderStatus::ContinueSingleObject(CPDF_PageObject* pObj,
     return false;
   }
 
-  if (PlateLeavesImage(context_->GetDocument(), pObj->AsImage())) {
+  if (PlateLeavesImage(context_->GetDocument(), pObj->AsImage(),
+                       GetFormResource(), GetPageResource())) {
     return false;
   }
 
@@ -1359,7 +1375,8 @@ void CPDF_RenderStatus::ProcessPathPattern(
 
 bool CPDF_RenderStatus::ProcessImage(CPDF_ImageObject* pImageObj,
                                      const CFX_Matrix& mtObj2Device) {
-  if (PlateLeavesImage(context_->GetDocument(), pImageObj)) {
+  if (PlateLeavesImage(context_->GetDocument(), pImageObj,
+                       GetFormResource(), GetPageResource())) {
     return true;
   }
   CPDF_ImageRenderer render(this);

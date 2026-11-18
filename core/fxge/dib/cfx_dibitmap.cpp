@@ -20,6 +20,7 @@
 #include "core/fxcrt/fx_coordinates.h"
 #include "core/fxcrt/fx_memcpy_wrappers.h"
 #include "core/fxcrt/fx_safe_types.h"
+#include "core/fxcrt/fx_system.h"
 #include "core/fxcrt/notreached.h"
 #include "core/fxcrt/numerics/safe_conversions.h"
 #include "core/fxcrt/span.h"
@@ -382,7 +383,7 @@ bool CFX_DIBitmap::MultiplyAlphaMask(RetainPtr<const CFX_DIBitmap> mask) {
     auto mask_scan =
         mask->GetScanline(row).first(static_cast<size_t>(GetWidth()));
     for (int col = 0; col < GetWidth(); col++) {
-      dest_scan[col].alpha = dest_scan[col].alpha * mask_scan[col] / 255;
+      dest_scan[col].alpha = (dest_scan[col].alpha * mask_scan[col] + 127) / 255;
     }
   }
   return true;
@@ -407,12 +408,13 @@ bool CFX_DIBitmap::MultiplyAlpha(float alpha) {
     return false;
   }
 
-  const int bitmap_alpha = static_cast<int>(alpha * 255.0f);
+  // pdfking: rounded, as gs composites
+  const int bitmap_alpha = FXSYS_roundf(alpha * 255.0f);
   for (int row = 0; row < GetHeight(); row++) {
     auto dest_scan = GetWritableScanlineAs<FX_BGRA_STRUCT<uint8_t>>(row).first(
         static_cast<size_t>(GetWidth()));
     for (auto& pixel : dest_scan) {
-      pixel.alpha = pixel.alpha * bitmap_alpha / 255;
+      pixel.alpha = (pixel.alpha * bitmap_alpha + 127) / 255;
     }
   }
   return true;

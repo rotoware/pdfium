@@ -56,9 +56,9 @@ int Blend(BlendMode blend_mode, int back_color, int src_color) {
     case BlendMode::kNormal:
       return src_color;
     case BlendMode::kMultiply:
-      return src_color * back_color / 255;
+      return (src_color * back_color + 127) / 255;  // pdfking: rounded
     case BlendMode::kScreen:
-      return src_color + back_color - src_color * back_color / 255;
+      return src_color + back_color - (src_color * back_color + 127) / 255;
     case BlendMode::kOverlay:
       return Blend(BlendMode::kHardLight, src_color, back_color);
     case BlendMode::kDarken:
@@ -79,7 +79,7 @@ int Blend(BlendMode blend_mode, int back_color, int src_color) {
     }
     case BlendMode::kHardLight:
       if (src_color < 128) {
-        return (src_color * back_color * 2) / 255;
+        return (src_color * back_color * 2 + 127) / 255;
       }
       return Blend(BlendMode::kScreen, back_color, 2 * src_color - 255);
     case BlendMode::kSoftLight: {
@@ -95,7 +95,7 @@ int Blend(BlendMode blend_mode, int back_color, int src_color) {
     case BlendMode::kDifference:
       return std::abs(back_color - src_color);
     case BlendMode::kExclusion:
-      return back_color + src_color - 2 * back_color * src_color / 255;
+      return back_color + src_color - (2 * back_color * src_color + 127) / 255;
     default:
       // This function does not handle non-separable blend modes.
       NOTREACHED();
