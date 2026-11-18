@@ -21,8 +21,11 @@ them (`-dUseFastColor`, overprint simulated).
 
 Known differences left (everything else byte-identical, plates in cells):
 
-- gs tiffsep only, pam right: under overprint OPM 1 a process color over
-  cyan knocks the cyan plate out; a 1-bit image (gray, indexed, CCITT,
+- gs (tiffsep and pam, /simulate or not) ignores overprint of process
+  colors on a page until a spot color has been painted on it: before, a
+  process color knocks the others out (00-sheet: the first three rows,
+  over cyan; a CMYK-only page: everywhere). pdfium overprints per the spec.
+- gs tiffsep only, pam right: a 1-bit image (gray, indexed, CCITT,
   JBIG2) with ca < 1 or a blend mode is painted as its 0 color over the
   whole image, then the 1 pixels.
 - Lab: gs converts through ICC with black generation, pdfium does not.
