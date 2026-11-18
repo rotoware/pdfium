@@ -167,7 +167,6 @@ source_set("fxcrt") {
   ]
   public_deps = [
     "//third_party/abseil-cpp:absl",
-    "//third_party/icu:icuuc",
     "//third_party/icu:icuuc_public",
   ]
   if (pdf_use_partition_alloc) {

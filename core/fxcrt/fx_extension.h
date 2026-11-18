@@ -18,8 +18,7 @@
 #if defined(USE_SYSTEM_ICUUC)
 #include <unicode/uchar.h>
 #else
-#include "third_party/icu/source/common/unicode/uchar.h"
-#endif
+/* pdfking: no ICU, the predicates below are ASCII */#endif
 
 #define FX_INVALID_OFFSET static_cast<uint32_t>(-1)
 
@@ -28,19 +27,19 @@
 float FXSYS_wcstof(WideStringView pwsStr, size_t* pUsedLen);
 
 inline bool FXSYS_iswlower(int32_t c) {
-  return u_islower(c);
+  return /* ascii */ c >= 'a' && c <= 'z';
 }
 
 inline bool FXSYS_iswupper(int32_t c) {
-  return u_isupper(c);
+  return /* ascii */ c >= 'A' && c <= 'Z';
 }
 
 inline int32_t FXSYS_towlower(wchar_t c) {
-  return u_tolower(c);
+  return /* ascii */ (c >= 'A' && c <= 'Z') ? (c + ('a' - 'A')) : c;
 }
 
 inline int32_t FXSYS_towupper(wchar_t c) {
-  return u_toupper(c);
+  return /* ascii */ (c >= 'a' && c <= 'z') ? (c + ('A' - 'a')) : c;
 }
 
 inline constexpr bool FXSYS_IsLowerASCII(int32_t c) {
@@ -60,15 +59,15 @@ inline constexpr char FXSYS_ToUpperASCII(char c) {
 }
 
 inline bool FXSYS_iswalpha(wchar_t c) {
-  return u_isalpha(c);
+  return /* ascii */ (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
 }
 
 inline bool FXSYS_iswalnum(wchar_t c) {
-  return u_isalnum(c);
+  return /* ascii */ FXSYS_iswalpha(c) || (c >= '0' && c <= '9');
 }
 
 inline bool FXSYS_iswspace(wchar_t c) {
-  return u_isspace(c);
+  return /* ascii */ c == ' ' || c == '\n' || c == '\r' || c == '\t' || c == '\f';
 }
 
 inline constexpr bool FXSYS_IsOctalDigit(char c) {

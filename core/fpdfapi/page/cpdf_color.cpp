@@ -100,6 +100,26 @@ bool CPDF_Color::IsColorSpaceGray() const {
          CPDF_ColorSpace::GetStockCS(CPDF_ColorSpace::Family::kDeviceGray);
 }
 
+bool CPDF_Color::IsColorSpaceCMYK() const {
+  return cs_ ==
+         CPDF_ColorSpace::GetStockCS(CPDF_ColorSpace::Family::kDeviceCMYK);
+}
+
+uint32_t CPDF_Color::GetSeparationObjNum() const {
+  if (!cs_ || cs_->GetFamily() != CPDF_ColorSpace::Family::kSeparation) {
+    return 0;
+  }
+  const CPDF_Array* array = cs_->GetArray();
+  return array ? array->GetObjNum() : 0;
+}
+
+pdfium::span<const float> CPDF_Color::GetComponents() const {
+  if (std::holds_alternative<std::vector<float>>(color_data_)) {
+    return pdfium::span<const float>(std::get<std::vector<float>>(color_data_));
+  }
+  return {};
+}
+
 std::optional<FX_COLORREF> CPDF_Color::GetColorRef() const {
   std::optional<FX_RGB_STRUCT<float>> maybe_rgb = GetRGB();
   if (!maybe_rgb.has_value()) {
