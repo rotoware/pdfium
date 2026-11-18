@@ -73,8 +73,8 @@ class CPDF_PlateCS final : public CPDF_ColorSpace {
 
   std::optional<FX_RGB_STRUCT<float>> GetRGB(
       pdfium::span<const float> pBuf) const override {
-    float gray =
-        1.0f - PlateInk(base_.Get(), pBuf, plate_, false, 0).value_or(0.0f);
+    float gray = PlateGray(
+        PlateByte(PlateInk(base_.Get(), pBuf, plate_, false, 0).value_or(0.0f)));
     return FX_RGB_STRUCT<float>{gray, gray, gray};
   }
 
@@ -99,7 +99,7 @@ class CPDF_PlateCS final : public CPDF_ColorSpace {
         src[j] = src_span[i * n + j] / divisor;
       }
       auto rgb = GetRGBOrZerosOnError(src);
-      uint8_t gray = static_cast<uint8_t>(rgb.red * 255 + 0.5f);
+      uint8_t gray = static_cast<uint8_t>(rgb.red * 255);
       dest_span[i * 3] = gray;
       dest_span[i * 3 + 1] = gray;
       dest_span[i * 3 + 2] = gray;
@@ -135,6 +135,16 @@ class CPDF_PlateCS final : public CPDF_ColorSpace {
 };
 
 }  // namespace
+
+int PlateByte(float ink) {
+  const int frac = static_cast<int>(Clamp(ink) * 32760.0f + 0.5f);
+  const int cv = (frac << 1) + (frac >> 14);
+  return cv >> 8;
+}
+
+float PlateGray(int byte) {
+  return (255 - byte + 0.25f) / 255.0f;
+}
 
 bool PlateMarked(const CPDF_ColorSpace* cs, const ByteString& plate) {
   if (!cs) {

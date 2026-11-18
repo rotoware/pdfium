@@ -493,7 +493,7 @@ FX_ARGB CPDF_RenderStatus::GetFillArgbForType3(CPDF_PageObject* pObj) const {
     if (!ink.has_value()) {
       return 0;
     }
-    int gray = FXSYS_roundf((1.0f - ink.value()) * 255);
+    int gray = 255 - PlateByte(ink.value());
     return ArgbEncode(alpha, gray, gray, gray);
   }
   RetainPtr<const CPDF_Object> pTR = pObj->general_state().GetTR();
@@ -538,7 +538,7 @@ FX_ARGB CPDF_RenderStatus::GetStrokeArgb(CPDF_PageObject* pObj) const {
     if (!ink.has_value()) {
       return 0;
     }
-    int gray = FXSYS_roundf((1.0f - ink.value()) * 255);
+    int gray = 255 - PlateByte(ink.value());
     return ArgbEncode(alpha, gray, gray, gray);
   }
   RetainPtr<const CPDF_Object> pTR = pObj->general_state().GetTR();

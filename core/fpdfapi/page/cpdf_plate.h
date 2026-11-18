@@ -29,6 +29,15 @@ std::optional<float> PlateInk(const CPDF_ColorSpace* cs,
                               bool overprint,
                               int opm);
 
+// The 8-bit ink of `ink` as gs puts it on a device: a frac (15 bits, 32760
+// full) rounded, its 16-bit color value, the high byte. 0.7 is 179 where
+// round(0.7 * 255) would be 178.
+int PlateByte(float ink);
+
+// The gray, 0 to 1, of the 8-bit ink `byte`: 255 - byte for whichever reads
+// it, truncating (images) or rounding (shadings).
+float PlateGray(int byte);
+
 // `base` read as the gray of `plate`: images and shadings drawn through it
 // come out as the plate does.
 RetainPtr<CPDF_ColorSpace> PlateColorSpace(RetainPtr<CPDF_ColorSpace> base,
