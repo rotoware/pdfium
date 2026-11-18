@@ -8,8 +8,9 @@ import struct
 import sys
 import zlib
 
-CELL, GAP, MARGIN = 30, 6, 20
-LEFT, TOP = 110, 50  # room for the row and column labels
+# every edge a multiple of 3pt: whole pixels at 144dpi and at 2400 (3pt = 100px)
+CELL, GAP, MARGIN = 30, 6, 21
+LEFT, TOP = 111, 51  # room for the row and column labels
 TINTS = [0, 1, 2, 3, 5, 10, 20, 25, 30, 40, 50, 60, 70, 75, 80, 90, 95, 97, 99, 100]
 P021 = "PANTONE 021 C"  # orange, alternate M .53 Y 1
 P354 = "PANTONE 354 C"  # green, alternate C .8 Y .9
@@ -30,6 +31,7 @@ class Doc:
         self.res = {"ColorSpace": {}, "ExtGState": {}, "XObject": {}, "Shading": {}, "Pattern": {}, "Font": {}}
         self.content = []
         self.cells = []
+        self.meta = {}  # into the .json: dpi, plates antialiased too, no composites
 
     def obj(self, body):
         self.objs.append(body if isinstance(body, bytes) else body.encode())
@@ -76,7 +78,7 @@ class Doc:
     def write(self, path):
         page_res = " ".join(f"/{k} << " + " ".join(f"/{n} {v}" for n, v in d.items()) + " >>"
                             for k, d in self.res.items() if d)
-        self.res["Font"] = {"Fl": "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"}
+        self.res["Font"]["Fl"] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"
         content = (self.labels() + "".join(self.content)).encode()
         contents = self.stream("", content)
         page = self.obj(f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {self.W} {self.H}]"
@@ -92,7 +94,7 @@ class Doc:
         out += b"".join(f"{o:010d} 00000 n \n".encode() for o in offsets)
         out += f"trailer\n<< /Size {len(objs) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
         open(path + ".pdf", "wb").write(out)
-        json.dump({"W": self.W, "H": self.H, "cell": CELL, "cells": self.cells}, open(path + ".json", "w"))
+        json.dump({"W": self.W, "H": self.H, "cell": CELL, "cells": self.cells, **self.meta}, open(path + ".json", "w"))
 
     # color spaces used across the tests
     def spot(self, n, alt):
@@ -725,9 +727,53 @@ def images():
     return d
 
 
+# ── 12 text: a word per box, ever bigger, clipped to its box ─────────────
+# a TrueType font embedded, so both draw the same outlines
+TEXT_SIZES = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 18, 24, 36, 48, 72, 120]
+FONTS = {"Arial": "/System/Library/Fonts/Supplemental/Arial.ttf",
+         "TimesNewRoman": "/System/Library/Fonts/Supplemental/Times New Roman.ttf"}
+
+
+def font(d, key, path):
+    """a simple TrueType font, WinAnsi, embedded whole"""
+    from fontTools.ttLib import TTFont
+    tt = TTFont(path)
+    upm = tt["head"].unitsPerEm
+    cmap, hmtx = tt.getBestCmap(), tt["hmtx"]
+    widths = [round(hmtx[cmap[c]][0] * 1000 / upm) if c in cmap else 0 for c in range(32, 127)]
+    h = tt["head"]
+    data = open(path, "rb").read()
+    ff = d.stream(f"/Length1 {len(data)}", data)
+    desc = d.obj(f"<< /Type /FontDescriptor /FontName /{key} /Flags 32 /FontBBox [{h.xMin} {h.yMin} {h.xMax} {h.yMax}]"
+                 f" /ItalicAngle 0 /Ascent 900 /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 {ff} >>")
+    d.add("Font", key, d.obj(f"<< /Type /Font /Subtype /TrueType /BaseFont /{key} /FirstChar 32 /LastChar 126"
+                             f" /Widths [{' '.join(map(str, widths))}] /Encoding /WinAnsiEncoding /FontDescriptor {desc} >>"))
+
+
+def text():
+    d = Doc([], [f"{s}pt" for s in TEXT_SIZES])
+    s021, _ = d.spots()
+    for k, p in FONTS.items():
+        font(d, f"T{k}", p)
+    op1 = d.gs("OPT", "<< /OP true /op true /OPM 1 >>")
+    # (label, font, how it paints, what is under it)
+    rows = [("Arial K", "Arial", "0 0 0 1 k", ""),
+            ("Times K", "TimesNewRoman", "0 0 0 1 k", ""),
+            ("Arial C .6", "Arial", "0.6 0 0 0 k", ""),
+            ("Arial 021", "Arial", f"/{s021} cs 1 scn", ""),
+            ("Arial K OP over 021 .5", "Arial", f"/{op1} gs 0 0 0 1 k", f"/{s021} cs 0.5 scn {box()}"),
+            ("Arial white on CMYK .3", "Arial", "0 0 0 0 k", f"0.3 0.3 0.3 0.3 k {box()}"),
+            ("Arial K stroked .25pt", "Arial", "0 0 0 1 K 0.25 w 1 Tr", "")]
+    d.rows = [r[0] for r in rows]
+    for r, (label, f, paint, under) in enumerate(rows):
+        for c, size in enumerate(TEXT_SIZES):
+            # baseline a fifth up the box, 2pt in: the bigger, the more is cut
+            d.cell(r, c, f"{under}\nq 0 0 {CELL} {CELL} re W n {paint} BT /T{f} {size} Tf 2 {CELL / 5} Td (Rag) Tj ET Q")
+    return d
+
 TESTS = [("00-sheet", sheet), ("01-tints", tints), ("02-blends", blends), ("03-rgb-gray-cie-vectors", rgb_vectors),
          ("04-images-process-gray", images_process), ("05-images-rgb", images_rgb), ("06-images-spot", images_spot),
-         ("07-overprint", overprint), ("08-shadings", shadings), ("09-groups-softmasks", groups), ("10-icc", icc), ("11-images", images)]
+         ("07-overprint", overprint), ("08-shadings", shadings), ("09-groups-softmasks", groups), ("10-icc", icc), ("11-images", images), ("12-text", text)]
 
 if __name__ == "__main__":
     out = sys.argv[1]

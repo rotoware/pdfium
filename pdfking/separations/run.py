@@ -35,7 +35,9 @@ def flat(path):
 def pdfium(pdf, folder, *args):
     os.makedirs(folder, exist_ok=True)
     shutil.copy(pdf, f"{folder}/page.pdf")
-    subprocess.run([PDFIUM, *args, f"--scale={K}", "--no-smoothtext", "--no-smoothimage", "--no-smoothpath",
+    # --no-nativetext: macOS CoreGraphics text antialiases whatever the
+    # flags say; pdfium has it on no other platform (FreeType draws)
+    subprocess.run([PDFIUM, *args, f"--scale={K}", "--no-nativetext", "--no-smoothtext", "--no-smoothimage", "--no-smoothpath",
                     "--png", "page.pdf"], cwd=folder, check=True, capture_output=True)
     return flat(f"{folder}/page.pdf.0.png")
 
