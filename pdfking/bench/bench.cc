@@ -2,6 +2,7 @@
 // switch separate wants them: 8-bit gray, a band of rows at a time, the
 // document read once. Times each plate; --dump writes the plates raw.
 // usage: bench <pdf> <dpi> <rows> <plate,plate,...> [--bgra] [--dump=<prefix>]
+//        [--crop=x,y,w,h] (pixels from the top left: that window alone)
 
 #include <chrono>
 #include <cstdio>
@@ -33,11 +34,14 @@ int main(int argc, char** argv) {
   }
   bool bgra = false;
   std::string dump;
+  int crop[4] = {0, 0, 0, 0};
   for (int i = 5; i < argc; ++i) {
     if (!strcmp(argv[i], "--bgra")) {
       bgra = true;
     } else if (!strncmp(argv[i], "--dump=", 7)) {
       dump = argv[i] + 7;
+    } else if (!strncmp(argv[i], "--crop=", 7)) {
+      sscanf(argv[i] + 7, "%d,%d,%d,%d", &crop[0], &crop[1], &crop[2], &crop[3]);
     }
   }
 
@@ -62,6 +66,13 @@ int main(int argc, char** argv) {
     // the page's size rounded, as gs sizes it; drawn at dpi / 72 exactly
     int width = static_cast<int>(FPDF_GetPageWidthF(page) * dpi / 72 + 0.5);
     int height = static_cast<int>(FPDF_GetPageHeightF(page) * dpi / 72 + 0.5);
+    // pdfium puts the page's top on the bitmap's, gs (and switch's Install)
+    // its bottom: a page some fraction of a pixel tall moves by it
+    float lift = height - FPDF_GetPageHeightF(page) * static_cast<float>(dpi / 72);
+    if (crop[2]) {
+      width = crop[2];
+      height = crop[3];
+    }
     FPDF_BITMAP band = FPDFBitmap_CreateEx(
         width, rows, bgra ? FPDFBitmap_BGRx : FPDFBitmap_Gray, nullptr, 0);
     if (!band) {
@@ -79,8 +90,9 @@ int main(int argc, char** argv) {
     for (int top = 0; top < height; top += rows) {
       FPDFBitmap_FillRect(band, 0, 0, width, rows, 0xFFFFFFFF);
       FS_MATRIX matrix = {static_cast<float>(dpi / 72), 0, 0,
-                          static_cast<float>(dpi / 72), 0,
-                          static_cast<float>(-top)};
+                          static_cast<float>(dpi / 72),
+                          static_cast<float>(-crop[0]),
+                          static_cast<float>(-crop[1] - top) + lift};
       FS_RECTF clip = {0, 0, static_cast<float>(width),
                        static_cast<float>(rows)};
       FPDF_RenderPageBitmapWithMatrix(band, page, &matrix, &clip, flags);

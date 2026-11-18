@@ -457,9 +457,9 @@ private:
     }
     // pdfking: a line never cut where it leaves the box: cut, the box's
     // rows would come out a hair off the whole line's, and a band off the
-    // page's. The outline renders the box's rows alone; a line all left of
-    // the box brings only its cover, as a vertical one would, and one all
-    // right of it nothing
+    // page's. The outline renders the box's rows alone; a line all left or
+    // all right of the box only its cover, as a vertical one just out of it
+    // would (a row's cover must come back to nothing)
     void clip_segment(int x, int y)
     {
         int x1 = m_prev_x;
@@ -468,9 +468,8 @@ private:
         m_prev_y = y;
         m_status = status_line_to;
         if(x1 > m_clip_box.x2 && x > m_clip_box.x2) {
-            return;
-        }
-        if(x1 < m_clip_box.x1 && x < m_clip_box.x1) {
+            x1 = x = m_clip_box.x2 + 1;
+        } else if(x1 < m_clip_box.x1 && x < m_clip_box.x1) {
             x1 = x = m_clip_box.x1 - 1;
         }
         m_outline.move_to(x1, y1);
