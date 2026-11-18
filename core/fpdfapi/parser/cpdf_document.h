@@ -14,9 +14,9 @@
 
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_parser.h"
+#include "core/fxcrt/bytestring.h"
 #include "core/fxcrt/fx_memory.h"
 #include "core/fxcrt/observed_ptr.h"
-#include "core/fxcrt/bytestring.h"
 #include "core/fxcrt/retain_ptr.h"
 #include "core/fxcrt/span.h"
 #include "core/fxcrt/unowned_ptr.h"
@@ -177,7 +177,6 @@ class CPDF_Document : public Observable,
   void ResizePageListForTesting(size_t size);
 
  private:
-  ByteString plate_;
   class [[maybe_unused, nodiscard]] StockFontClearer {
    public:
     FX_STACK_ALLOCATED();
@@ -246,6 +245,7 @@ class CPDF_Document : public Observable,
   std::unique_ptr<LinkListIface> links_context_;
   std::set<uint32_t> modified_apstream_ids_;
   std::vector<uint32_t> page_list_;  // Page number to page's dict objnum.
+  ByteString plate_;  // pdfking
 
   // Must be second to last.
   StockFontClearer stock_font_clearer_;

@@ -6,10 +6,13 @@
 #include <set>
 #include <vector>
 
+#include "core/fpdfapi/page/cpdf_color.h"
 #include "core/fpdfapi/page/cpdf_colorspace.h"
+#include "core/fpdfapi/page/cpdf_generalstate.h"
 #include "core/fpdfapi/page/cpdf_indexedcs.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fxcrt/data_vector.h"
+#include "core/fxcrt/fx_system.h"
 
 namespace {
 
@@ -249,4 +252,32 @@ RetainPtr<CPDF_ColorSpace> PlateColorSpace(RetainPtr<CPDF_ColorSpace> base,
     return base;
   }
   return pdfium::MakeRetain<CPDF_PlateCS>(std::move(base), plate);
+}
+
+std::optional<FX_ARGB> PlateArgb(const ByteString& plate,
+                                 const CPDF_Color* color,
+                                 const CPDF_GeneralState& state,
+                                 bool stroke) {
+  if (plate.IsEmpty() || !color || color->IsPattern()) {
+    return std::nullopt;
+  }
+  std::optional<float> ink =
+      PlateInk(color->GetColorSpace(), color->GetComponents(), plate,
+               stroke ? state.GetStrokeOP() : state.GetFillOP(),
+               state.GetOPMode());
+  if (!ink.has_value()) {
+    return 0;
+  }
+  const int gray = 255 - PlateByte(ink.value());
+  const float alpha = stroke ? state.GetStrokeAlpha() : state.GetFillAlpha();
+  return ArgbEncode(FXSYS_roundf(alpha * 255), gray, gray, gray);
+}
+
+BlendMode PlateBlendMode(BlendMode mode, const ByteString& plate) {
+  if (!plate.IsEmpty() && PlateIsSpot(plate) &&
+      (mode == BlendMode::kDifference || mode == BlendMode::kExclusion ||
+       mode >= BlendMode::kHue)) {
+    return BlendMode::kNormal;
+  }
+  return mode;
 }

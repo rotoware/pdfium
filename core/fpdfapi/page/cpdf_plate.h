@@ -8,8 +8,11 @@
 #include "core/fxcrt/bytestring.h"
 #include "core/fxcrt/retain_ptr.h"
 #include "core/fxcrt/span.h"
+#include "core/fxge/dib/fx_dib.h"
 
+class CPDF_Color;
 class CPDF_ColorSpace;
+class CPDF_GeneralState;
 
 // Whether `plate` is a spot's, not one of the four process plates.
 bool PlateIsSpot(const ByteString& plate);
@@ -45,5 +48,19 @@ float PlateGray(int byte);
 // come out as the plate does.
 RetainPtr<CPDF_ColorSpace> PlateColorSpace(RetainPtr<CPDF_ColorSpace> base,
                                            const ByteString& plate);
+
+// What an object filled (or stroked) in `color` with `state` puts on
+// `plate`: its gray, the opacity rounded as gs composites it (.25 is 64/255,
+// not 63), 0 where the plate is left as it was. Nothing off a plate or for a
+// pattern.
+std::optional<FX_ARGB> PlateArgb(const ByteString& plate,
+                                 const CPDF_Color* color,
+                                 const CPDF_GeneralState& state,
+                                 bool stroke);
+
+// `mode` on `plate`: on a spot's the nonseparable modes are Normal (ISO
+// 32000-2 11.7.4.2: they apply to process colorants alone), and so, as gs
+// blends a spot, are Difference and Exclusion.
+BlendMode PlateBlendMode(BlendMode mode, const ByteString& plate);
 
 #endif  // CORE_FPDFAPI_PAGE_CPDF_PLATE_H_

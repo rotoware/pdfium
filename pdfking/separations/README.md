@@ -16,7 +16,7 @@ them (`-dUseFastColor`, overprint simulated).
   plate gs / pdfium / diff, orange off by 1, red more) and
   `<dir>/out/SUMMARY.md`. Needs `out/native/pdfium_test` built and gs.
 
-    uv run --with pillow --with numpy python make.py /tmp/separations/pdf
+    uv run --with pillow --with numpy --with fonttools python make.py /tmp/separations/pdf
     uv run --with pillow --with numpy python run.py /tmp/separations
 
 Known differences left (everything else byte-identical, plates in cells):

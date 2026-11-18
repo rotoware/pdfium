@@ -72,14 +72,6 @@ class CPDF_RenderStatus {
 
   void RenderObjectList(const CPDF_PageObjectHolder* pObjectHolder,
                         const CFX_Matrix& mtObj2Device);
-  // pdfking: a knockout group's objects, each on the group's backdrop
-  void MixGroup(const CPDF_FormObject* pFormObj,
-                const CFX_Matrix& mtObj2Device,
-                const FX_RECT& rect,
-                RetainPtr<CFX_DIBitmap> backdrop);
-  void RenderKnockoutGroup(const CPDF_FormObject* pFormObj,
-                           const CFX_Matrix& matrix,
-                           const CFX_Matrix& mtObj2Device);
   void RenderSingleObject(CPDF_PageObject* pObj,
                           const CFX_Matrix& mtObj2Device);
   bool ContinueSingleObject(CPDF_PageObject* pObj,
@@ -137,6 +129,21 @@ class CPDF_RenderStatus {
       bool stroke);
 
  private:
+  // pdfking: plates and groups, in cpdf_renderstatus_plate.cpp
+  bool PlateLeavesImage(CPDF_ImageObject* image) const;
+  bool PlateMixesGroup(const CPDF_FormObject* form) const;
+  void RenderGroup(CPDF_RenderStatus* status,
+                   const CPDF_FormObject* form,
+                   const CFX_Matrix& matrix,
+                   const CFX_Matrix& mtObj2Device);
+  void RenderKnockoutGroup(const CPDF_FormObject* form,
+                           const CFX_Matrix& matrix,
+                           const CFX_Matrix& mtObj2Device);
+  void MixGroup(const CPDF_FormObject* form,
+                const CFX_Matrix& mtObj2Device,
+                const FX_RECT& rect,
+                const CFX_DIBitmap& backdrop);
+
   bool ProcessTransparency(CPDF_PageObject* PageObj,
                            const CFX_Matrix& mtObj2Device);
   void ProcessObjectNoClip(CPDF_PageObject* pObj,

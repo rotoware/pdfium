@@ -25,6 +25,7 @@ source_set("render") {
     "cpdf_rendershading.h",
     "cpdf_renderstatus.cpp",
     "cpdf_renderstatus.h",
+    "cpdf_renderstatus_plate.cpp",
     "cpdf_rendertiling.cpp",
     "cpdf_rendertiling.h",
     "cpdf_textrenderer.cpp",

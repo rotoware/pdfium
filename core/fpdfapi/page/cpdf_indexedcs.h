@@ -7,9 +7,8 @@
 
 #include <stdint.h>
 
-#include <set>
-
 #include <optional>
+#include <set>
 
 #include "core/fpdfapi/page/cpdf_basedcs.h"
 #include "core/fxcrt/data_vector.h"

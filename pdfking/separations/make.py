@@ -401,18 +401,20 @@ def groups():
     smask_l = d.gs("SML", f"<< /SMask << /Type /Mask /S /Luminosity /G {d.res['XObject'][lum]} >> >>")
     alpha = form("Alp", f"/A5 gs 0 g {box(0, 0, 15)} 0 g {box(15, 0, 15)}", "/Group << /S /Transparency >>")
     smask_a = d.gs("SMA", f"<< /SMask << /Type /Mask /S /Alpha /G {d.res['XObject'][alpha]} >> >>")
-    cases = [("plain", form("F0", inner, "")),
-             ("group", form("F1", inner, "/Group << /S /Transparency >>")),
-             ("isolated", form("F2", inner, "/Group << /S /Transparency /I true >>")),
-             ("knockout", form("F3", inner, "/Group << /S /Transparency /K true >>")),
-             ("group Multiply", form("F4", f"/Mul gs {inner}", "/Group << /S /Transparency >>")),
-             ("smask luminosity", form("F5", f"0 0 0 1 k {box()}", "")),
-             ("smask alpha", form("F6", f"0 0 0 1 k {box()}", ""))]
+    group, mul_group = form("F1", inner, "/Group << /S /Transparency >>"), form("F4", f"/Mul gs {inner}", "/Group << /S /Transparency >>")
+    k = form("F5", f"0 0 0 1 k {box()}", "")
+    # (label, form, the state it is drawn in): the last three a group the page
+    # shows through, its objects blending with the page (an InDesign shadow)
+    cases = [("plain", form("F0", inner, ""), ""), ("group", group, ""),
+             ("isolated", form("F2", inner, "/Group << /S /Transparency /I true >>"), ""),
+             ("knockout", form("F3", inner, "/Group << /S /Transparency /K true >>"), ""),
+             ("group Multiply", mul_group, ""), ("smask luminosity", k, f"/{smask_l} gs "), ("smask alpha", k, f"/{smask_a} gs "),
+             ("group ca .5", group, f"/{a5} gs "), ("group smask", group, f"/{smask_l} gs "),
+             ("group Multiply smask", mul_group, f"/{smask_a} gs ")]
     d.rows, d.cols = ["over Y .5 + 021 .5"], [c[0] for c in cases]
     base = f"0 0 0.5 0 k {box()} /{s021} cs 0.5 scn {box(0, 0, 15)}"
-    for c, (label, f) in enumerate(cases):
-        mask = {"smask luminosity": f"/{smask_l} gs ", "smask alpha": f"/{smask_a} gs "}.get(label, "")
-        d.cell(0, c, f"{base}\nq {mask}/{f} Do Q")
+    for c, (label, f, state) in enumerate(cases):
+        d.cell(0, c, f"{base}\nq {state}/{f} Do Q")
     return d
 
 
