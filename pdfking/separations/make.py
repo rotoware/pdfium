@@ -816,9 +816,67 @@ def text_overprint():
     return d
 
 
+
+# ── 14 knockout groups: two objects overlapping in a form, per group kind ─
+# A (cyan) on the left two thirds, B (354) on the right two thirds, over a
+# base of Y .5 with 021 .5 on its left half. In a knockout group B is
+# composited on the group's backdrop alone: where they overlap A is gone
+KO_GROUPS = [("no group", "", ""), ("group", "/Group << /S /Transparency >>", "/A gs"),
+             ("knockout", "/Group << /S /Transparency /K true >>", "/A gs"),
+             ("isolated knockout", "/Group << /S /Transparency /I true /K true >>", "/A gs"),
+             ("knockout opaque", "/Group << /S /Transparency /K true >>", ""),
+             ("knockout Multiply", "/Group << /S /Transparency /K true >>", "/M gs"),
+             ("knockout ca .5 Multiply", "/Group << /S /Transparency /K true >>", "/AM gs"),
+             ("knockout overprint", "/Group << /S /Transparency /K true >>", "/O gs"),
+             ("group ca .5 overprint", "/Group << /S /Transparency >>", "/AO gs")]
+
+
+def knockout():
+    d = Doc([], [g[0] for g in KO_GROUPS])
+    s021, s354 = d.spots()
+    font(d, "TArial", FONTS["Arial"])
+    cs = d.res["ColorSpace"]
+    gstates = {"A": "<< /ca 0.5 /CA 0.5 >>", "M": "<< /BM /Multiply >>", "AM": "<< /ca 0.5 /CA 0.5 /BM /Multiply >>",
+               "O": "<< /OP true /op true /OPM 1 >>", "AO": "<< /ca 0.5 /CA 0.5 /OP true /op true /OPM 1 >>"}
+    gs_refs = {k: d.obj(v) for k, v in gstates.items()}
+    img_c = d.stream("/Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceCMYK /BitsPerComponent 8",
+                     bytes([255, 0, 0, 0] * 4))
+    img_s = d.stream(f"/Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace {cs[s354]} /BitsPerComponent 8",
+                     bytes([255] * 4))
+    mask = d.stream("/Type /XObject /Subtype /Image /Width 2 /Height 2 /ImageMask true /BitsPerComponent 1",
+                    bytes([0x00, 0x00]))  # 0 paints: all four pixels
+    res = (f"<< /ExtGState << {' '.join(f'/{k} {v}' for k, v in gs_refs.items())} >>"
+           f" /ColorSpace << /S354 {cs[s354]} >> /Font << /TArial {d.res['Font']['TArial']} >>"
+           f" /XObject << /IC {img_c} /IS {img_s} /IM {mask} >> >>")
+    fill = {"A": "1 0 0 0 k", "B": "/S354 cs 1 scn"}
+    stroke = {"A": "1 0 0 0 K", "B": "/S354 CS 1 SCN"}
+    image = {"A": "IC", "B": "IS"}
+
+    def obj(kind, who, x):
+        return {"rect": f"{fill[who]} {x} 4 20 22 re f",
+                "path": f"{fill[who]} {x} 4 m {x + 20} 4 l {x + 10} 27 l h f",
+                "stroke": f"{stroke[who]} 5 w {x + 3} 6 m {x + 17} 24 l {x + 3} 24 l S",
+                "text": f"{fill[who]} BT /TArial 30 Tf {x - 1} 5 Td (H) Tj ET",
+                "image": f"q 20 0 0 22 {x} 4 cm /{image[who]} Do Q",
+                "imagemask": f"{fill[who]} q 20 0 0 22 {x} 4 cm /IM Do Q"}[kind]
+
+    pairs = [("rect", "rect"), ("path", "path"), ("stroke", "stroke"), ("text", "text"), ("image", "image"),
+             ("imagemask", "imagemask"), ("rect", "text"), ("text", "rect"), ("rect", "image"), ("image", "rect"),
+             ("stroke", "rect"), ("rect", "stroke"), ("image", "text")]
+    d.rows = [f"{a} then {b}" for a, b in pairs]
+    base = f"0 0 0.5 0 k {box()} /{s021} cs 0.5 scn {box(0, 0, 15)}"
+    for r, (a, b) in enumerate(pairs):
+        for c, (label, group, gstate) in enumerate(KO_GROUPS):
+            ops = f"{gstate} {obj(a, 'A', 0)}\n{obj(b, 'B', 10)}"
+            f = d.add("XObject", f"K{r}_{c}", d.stream(
+                f"/Type /XObject /Subtype /Form /BBox [0 0 {CELL} {CELL}] /Resources {res} {group}", ops.encode()))
+            d.cell(r, c, f"{base}\n/{f} Do")
+    return d
+
+
 TESTS = [("00-sheet", sheet), ("01-tints", tints), ("02-blends", blends), ("03-rgb-gray-cie-vectors", rgb_vectors),
          ("04-images-process-gray", images_process), ("05-images-rgb", images_rgb), ("06-images-spot", images_spot),
-         ("07-overprint", overprint), ("08-shadings", shadings), ("09-groups-softmasks", groups), ("10-icc", icc), ("11-images", images), ("12-text", text), ("13-text-overprint", text_overprint)]
+         ("07-overprint", overprint), ("08-shadings", shadings), ("09-groups-softmasks", groups), ("10-icc", icc), ("11-images", images), ("12-text", text), ("13-text-overprint", text_overprint), ("14-knockout", knockout)]
 
 if __name__ == "__main__":
     out = sys.argv[1]
