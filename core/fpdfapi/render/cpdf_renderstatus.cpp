@@ -494,7 +494,10 @@ FX_ARGB CPDF_RenderStatus::GetFillArgbForType3(CPDF_PageObject* pObj) const {
       return 0;
     }
     int gray = 255 - PlateByte(ink.value());
-    return ArgbEncode(alpha, gray, gray, gray);
+    // the opacity rounded, as gs composites it: .25 is 64/255, not 63
+    return ArgbEncode(
+        FXSYS_roundf(pObj->general_state().GetFillAlpha() * 255), gray, gray,
+        gray);
   }
   RetainPtr<const CPDF_Object> pTR = pObj->general_state().GetTR();
   if (pTR) {
@@ -539,7 +542,10 @@ FX_ARGB CPDF_RenderStatus::GetStrokeArgb(CPDF_PageObject* pObj) const {
       return 0;
     }
     int gray = 255 - PlateByte(ink.value());
-    return ArgbEncode(alpha, gray, gray, gray);
+    // the opacity rounded, as gs composites it: .25 is 64/255, not 63
+    return ArgbEncode(
+        FXSYS_roundf(pObj->general_state().GetStrokeAlpha() * 255), gray, gray,
+        gray);
   }
   RetainPtr<const CPDF_Object> pTR = pObj->general_state().GetTR();
   if (pTR) {
@@ -652,7 +658,17 @@ bool CPDF_RenderStatus::SelectClipPath(const CPDF_PathObject* path_obj,
 
 bool CPDF_RenderStatus::ProcessTransparency(CPDF_PageObject* pPageObj,
                                             const CFX_Matrix& mtObj2Device) {
-  const BlendMode blend_type = pPageObj->general_state().GetBlendType();
+  BlendMode blend_type = pPageObj->general_state().GetBlendType();
+  // pdfking: on a spot's plate the nonseparable modes are Normal (ISO
+  // 32000-2 11.7.4.2: they apply to process colorants alone), and so, as gs
+  // blends a spot, are Difference and Exclusion
+  const ByteString& plate = context_->GetDocument()->GetPlate();
+  if (!plate.IsEmpty() && PlateIsSpot(plate) &&
+      (blend_type == BlendMode::kDifference ||
+       blend_type == BlendMode::kExclusion ||
+       blend_type >= BlendMode::kHue)) {
+    blend_type = BlendMode::kNormal;
+  }
   RetainPtr<CPDF_Dictionary> pSMaskDict =
       pPageObj->mutable_general_state().GetMutableSoftMask();
   if (pSMaskDict) {

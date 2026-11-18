@@ -11,6 +11,9 @@
 
 class CPDF_ColorSpace;
 
+// Whether `plate` is a spot's, not one of the four process plates.
+bool PlateIsSpot(const ByteString& plate);
+
 // Whether anything painted in `cs` can put ink on `plate` (Cyan, Magenta,
 // Yellow, Black or a spot's name): a Separation or DeviceN only its own
 // colorants, CMYK the four process plates, gray Black alone, RGB and the CIE

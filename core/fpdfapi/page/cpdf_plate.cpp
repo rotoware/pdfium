@@ -136,6 +136,10 @@ class CPDF_PlateCS final : public CPDF_ColorSpace {
 
 }  // namespace
 
+bool PlateIsSpot(const ByteString& plate) {
+  return ProcessIndex(plate) < 0;
+}
+
 int PlateByte(float ink) {
   const int frac = static_cast<int>(Clamp(ink) * 32760.0f + 0.5f);
   const int cv = (frac << 1) + (frac >> 14);
