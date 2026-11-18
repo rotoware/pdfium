@@ -80,6 +80,12 @@ public:
     void reset();
     void move_to(int x, int y);
     void line_to(int x, int y);
+    // pdfking: the rows lines render, the rest skipped
+    void rows(int lo, int hi)
+    {
+        m_min_ey = lo;
+        m_max_ey = hi;
+    }
     int min_x() const
     {
         return m_min_x;
@@ -137,6 +143,8 @@ private:
     int       m_min_y;
     int       m_max_x;
     int       m_max_y;
+    int       m_min_ey = -0x3FFFFFFF;
+    int       m_max_ey = 0x3FFFFFFF;
     bool      m_sorted;
 };
 class scanline_hit_test 
@@ -227,6 +235,8 @@ public:
                           poly_coord(x2), poly_coord(y2));
         m_clip_box.normalize();
         m_clipping = true;
+        m_outline.rows(m_clip_box.y1 >> poly_base_shift,
+                       m_clip_box.y2 >> poly_base_shift);
     }
     void add_vertex(float x, float y, unsigned cmd)
     {
@@ -254,10 +264,6 @@ public:
             m_prev_x = m_start_x = x;
             m_prev_y = m_start_y = y;
             m_status = status_initial;
-            m_prev_flags = clipping_flags(x, y, m_clip_box);
-            if(m_prev_flags == 0) {
-                move_to_no_clip(x, y);
-            }
         } else {
             move_to_no_clip(x, y);
         }
@@ -277,6 +283,8 @@ public:
         }
         if(m_clipping) {
             clip_segment(m_start_x, m_start_y);
+            m_status = status_closed;
+            return;
         }
         close_polygon_no_clip();
     }
@@ -447,37 +455,26 @@ private:
             m_status = status_closed;
         }
     }
+    // pdfking: a line never cut where it leaves the box: cut, the box's
+    // rows would come out a hair off the whole line's, and a band off the
+    // page's. The outline renders the box's rows alone; a line all left of
+    // the box brings only its cover, as a vertical one would, and one all
+    // right of it nothing
     void clip_segment(int x, int y)
     {
-        unsigned flags = clipping_flags(x, y, m_clip_box);
-        if(m_prev_flags == flags) {
-            if(flags == 0) {
-                if(m_status == status_initial) {
-                    move_to_no_clip(x, y);
-                } else {
-                    line_to_no_clip(x, y);
-                }
-            }
-        } else {
-            int cx[4];
-            int cy[4];
-            unsigned n = clip_liang_barsky(m_prev_x, m_prev_y,
-                                           x, y,
-                                           m_clip_box,
-                                           cx, cy);
-            const int* px = cx;
-            const int* py = cy;
-            while(n--) {
-                if(m_status == status_initial) {
-                    move_to_no_clip(*px++, *py++);
-                } else {
-                    line_to_no_clip(*px++, *py++);
-                }
-            }
-        }
-        m_prev_flags = flags;
+        int x1 = m_prev_x;
+        int y1 = m_prev_y;
         m_prev_x = x;
         m_prev_y = y;
+        m_status = status_line_to;
+        if(x1 > m_clip_box.x2 && x > m_clip_box.x2) {
+            return;
+        }
+        if(x1 < m_clip_box.x1 && x < m_clip_box.x1) {
+            x1 = x = m_clip_box.x1 - 1;
+        }
+        m_outline.move_to(x1, y1);
+        m_outline.line_to(x, y);
     }
 private:
     static int calculate_area(int cover, int shift);

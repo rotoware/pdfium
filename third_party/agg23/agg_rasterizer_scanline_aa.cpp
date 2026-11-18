@@ -47,6 +47,10 @@
 //
 //----------------------------------------------------------------------------
 #include <limits.h>
+
+#include <algorithm>
+#include <cstdint>
+
 #include "agg_rasterizer_scanline_aa.h"
 #include "core/fxcrt/numerics/safe_math.h"
 namespace pdfium
@@ -141,6 +145,12 @@ AGG_INLINE void outline_aa::add_cur_cell()
         }
         *m_cur_cell_ptr++ = m_cur_cell;
         ++m_num_cells;
+        // pdfking: the bounds of the cells kept, not of every one passed:
+        // lines pass rows they skip
+        m_min_x = std::min(m_min_x, m_cur_cell.x);
+        m_max_x = std::max(m_max_x, m_cur_cell.x);
+        m_min_y = std::min(m_min_y, m_cur_cell.y);
+        m_max_y = std::max(m_max_y, m_cur_cell.y);
     }
 }
 AGG_INLINE void outline_aa::set_cur_cell(int x, int y)
@@ -148,18 +158,6 @@ AGG_INLINE void outline_aa::set_cur_cell(int x, int y)
     if(m_cur_cell.x != x || m_cur_cell.y != y) {
         add_cur_cell();
         m_cur_cell.set(x, y, 0, 0);
-        if(x < m_min_x) {
-            m_min_x = x;
-        }
-        if(x > m_max_x) {
-            m_max_x = x;
-        }
-        if(y < m_min_y) {
-            m_min_y = y;
-        }
-        if(y > m_max_y) {
-            m_max_y = y;
-        }
     }
 }
 AGG_INLINE void outline_aa::render_hline(int ey, int x1, int y1, int x2, int y2)
@@ -224,121 +222,55 @@ AGG_INLINE void outline_aa::render_hline(int ey, int x1, int y1, int x2, int y2)
     delta = y2 - y1;
     m_cur_cell.add_cover(delta, (fx2 + poly_base_size - first) * delta);
 }
+// pdfking: each row as the whole line crosses it, where the line crosses a
+// row's edges found in 64 bits from its two ends (agg stepped them, the
+// same floors), so the rows outside m_min_ey..m_max_ey skip and those in
+// come out alike however much of the line is drawn
 void outline_aa::render_line(int x1, int y1, int x2, int y2)
 {
-    enum dx_limit_e { dx_limit = 16384 << poly_base_shift };
-    pdfium::CheckedNumeric<int> safe_dx = x2;
-    safe_dx -= x1;
-    if (!safe_dx.IsValid())
-        return;
-
-    int dx = safe_dx.ValueOrDie();
-    if(dx >= dx_limit || dx <= -dx_limit) {
-        pdfium::CheckedNumeric<int> safe_cx = x1;
-        safe_cx += x2;
-        safe_cx /= 2;
-        if (!safe_cx.IsValid())
-            return;
-
-        pdfium::CheckedNumeric<int> safe_cy = y1;
-        safe_cy += y2;
-        safe_cy /= 2;
-        if (!safe_cy.IsValid())
-            return;
-
-        int cx = safe_cx.ValueOrDie();
-        int cy = safe_cy.ValueOrDie();
-        render_line(x1, y1, cx, cy);
-        render_line(cx, cy, x2, y2);
-    }
-    int dy = y2 - y1;
     int ey1 = y1 >> poly_base_shift;
     int ey2 = y2 >> poly_base_shift;
     int fy1 = y1 & poly_base_mask;
     int fy2 = y2 & poly_base_mask;
-    int x_from, x_to;
-    int rem, mod, lift, delta, first, incr;
+    if(std::max(ey1, ey2) < m_min_ey || std::min(ey1, ey2) > m_max_ey) {
+        return;
+    }
     if(ey1 == ey2) {
         render_hline(ey1, x1, fy1, x2, fy2);
         return;
     }
-    incr  = 1;
-    if(dx == 0) {
-        int ex = x1 >> poly_base_shift;
-        int two_fx = (x1 - (ex << poly_base_shift)) << 1;
-        int area;
-        first = poly_base_size;
-        if(dy < 0) {
-            first = 0;
-            incr  = -1;
-        }
-        x_from = x1;
-        delta = first - fy1;
-        m_cur_cell.add_cover(delta, two_fx * delta);
-        ey1 += incr;
-        set_cur_cell(ex, ey1);
-        delta = first + first - poly_base_size;
-        area = two_fx * delta;
-        while(ey1 != ey2) {
-            m_cur_cell.set_cover(delta, area);
-            ey1 += incr;
-            set_cur_cell(ex, ey1);
-        }
-        delta = fy2 - poly_base_size + first;
-        m_cur_cell.add_cover(delta, two_fx * delta);
-        return;
-    }
-    pdfium::CheckedNumeric<int> safeP = poly_base_size - fy1;
-    safeP *= dx;
-    if (!safeP.IsValid())
-      return;
-    first = poly_base_size;
+    int64_t dx = int64_t{x2} - x1;
+    int64_t dy = int64_t{y2} - y1;
+    int64_t p0 = (poly_base_size - fy1) * dx;
+    int first = poly_base_size;
+    int incr = 1;
     if(dy < 0) {
-      safeP = fy1;
-      safeP *= dx;
-      if (!safeP.IsValid())
-        return;
-      first = 0;
-      incr = -1;
-      dy = -dy;
+        p0 = fy1 * dx;
+        first = 0;
+        incr = -1;
+        dy = -dy;
     }
-    delta = (safeP / dy).ValueOrDie();
-    mod = (safeP % dy).ValueOrDie();
-    if(mod < 0) {
-        delta--;
-        mod += dy;
-    }
-    x_from = x1 + delta;
-    render_hline(ey1, x1, fy1, x_from, first);
-    ey1 += incr;
-    set_cur_cell(x_from >> poly_base_shift, ey1);
-    if(ey1 != ey2) {
-      safeP = static_cast<int>(poly_base_size);
-      safeP *= dx;
-      if (!safeP.IsValid())
-        return;
-      lift = (safeP / dy).ValueOrDie();
-      rem = (safeP % dy).ValueOrDie();
-      if (rem < 0) {
-        lift--;
-        rem += dy;
+    // x where the line leaves the row j rows on
+    auto leaves = [&](int64_t j) {
+        int64_t p = p0 + j * poly_base_size * dx;
+        int64_t q = p / dy;
+        if(p % dy < 0) {
+            q--;
         }
-        mod -= dy;
-        while(ey1 != ey2) {
-            delta = lift;
-            mod  += rem;
-            if (mod >= 0) {
-                mod -= dy;
-                delta++;
-            }
-            x_to = x_from + delta;
-            render_hline(ey1, x_from, poly_base_size - first, x_to, first);
-            x_from = x_to;
-            ey1 += incr;
-            set_cur_cell(x_from >> poly_base_shift, ey1);
-        }
+        return static_cast<int>(x1 + q);
+    };
+    int64_t n = incr * (int64_t{ey2} - ey1);
+    int64_t lo = std::max<int64_t>(0, incr * (int64_t{incr > 0 ? m_min_ey : m_max_ey} - ey1));
+    int64_t hi = std::min<int64_t>(n, incr * (int64_t{incr > 0 ? m_max_ey : m_min_ey} - ey1));
+    for(int64_t j = lo; j <= hi; j++) {
+        int ey = static_cast<int>(ey1 + incr * j);
+        int xa = j == 0 ? x1 : leaves(j - 1);
+        int xb = j == n ? x2 : leaves(j);
+        set_cur_cell(xa >> poly_base_shift, ey);
+        render_hline(ey, xa, j == 0 ? fy1 : poly_base_size - first, xb,
+                     j == n ? fy2 : first);
     }
-    render_hline(ey1, x_from, poly_base_size - first, x2, fy2);
+    set_cur_cell(x2 >> poly_base_shift, ey2);
 }
 void outline_aa::move_to(int x, int y)
 {

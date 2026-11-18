@@ -50,7 +50,8 @@
 namespace pdfium {
 namespace {
 
-const float kMaxPos = 32000.0f;
+// pdfking: a 2400 dpi plate is wider than 32000 px; agg holds 24.8 ints
+const float kMaxPos = 2000000.0f;
 
 CFX_PointF HardClip(const CFX_PointF& pos) {
   return CFX_PointF(std::clamp(pos.x, -kMaxPos, kMaxPos),
