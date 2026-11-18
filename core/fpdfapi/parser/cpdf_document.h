@@ -16,6 +16,7 @@
 #include "core/fpdfapi/parser/cpdf_parser.h"
 #include "core/fxcrt/fx_memory.h"
 #include "core/fxcrt/observed_ptr.h"
+#include "core/fxcrt/bytestring.h"
 #include "core/fxcrt/retain_ptr.h"
 #include "core/fxcrt/span.h"
 #include "core/fxcrt/unowned_ptr.h"
@@ -117,6 +118,12 @@ class CPDF_Document : public Observable,
   // owner.
   uint32_t GetUserPermissions(bool get_owner_perms) const;
 
+  // pdfking: the press plate the pages render as (see cpdf_plate.h), empty
+  // to render them in color. Set before a page is first rendered: images are
+  // cached as converted.
+  void SetPlate(const ByteString& plate) { plate_ = plate; }
+  const ByteString& GetPlate() const { return plate_; }
+
   // PageDataIface wrappers, try to avoid explicit getter calls.
   RetainPtr<CPDF_StreamAcc> GetFontFileStreamAcc(
       RetainPtr<const CPDF_Stream> font_stream);
@@ -170,6 +177,7 @@ class CPDF_Document : public Observable,
   void ResizePageListForTesting(size_t size);
 
  private:
+  ByteString plate_;
   class [[maybe_unused, nodiscard]] StockFontClearer {
    public:
     FX_STACK_ALLOCATED();

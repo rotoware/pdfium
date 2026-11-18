@@ -118,6 +118,8 @@ class CPDF_DIB final : public CFX_DIBBase {
   uint32_t Get1BitResetValue() const;
 
   UnownedPtr<CPDF_Document> const document_;
+  // pdfking: a soft mask, never read as a plate
+  bool is_mask_ = false;
   RetainPtr<const CPDF_Stream> const stream_;
   RetainPtr<const CPDF_Dictionary> dict_;
   RetainPtr<CPDF_StreamAcc> stream_acc_;

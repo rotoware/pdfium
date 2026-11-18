@@ -47,6 +47,8 @@ class CPDF_Color {
   uint32_t GetSeparationObjNum() const;
   // Returns the raw color components (C/M/Y/K for CMYK, R/G/B for RGB).
   pdfium::span<const float> GetComponents() const;
+  // pdfking: the color space, null for none
+  const CPDF_ColorSpace* GetColorSpace() const { return cs_.Get(); }
   // Wrapper around GetRGB() that returns the RGB value as FX_COLORREF. The
   // GetRGB() return value is clamped to fit into FX_COLORREF, where the color
   // components are 8-bit fields within an unsigned integer.

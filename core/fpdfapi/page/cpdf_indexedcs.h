@@ -9,6 +9,8 @@
 
 #include <set>
 
+#include <optional>
+
 #include "core/fpdfapi/page/cpdf_basedcs.h"
 #include "core/fxcrt/data_vector.h"
 #include "core/fxcrt/retain_ptr.h"
@@ -36,6 +38,12 @@ class CPDF_IndexedCS final : public CPDF_BasedCS {
                   std::set<const CPDF_Object*>* pVisited) override;
 
   int GetMaxIndex() const { return max_index_; }
+
+  // pdfking: the base color space, and the base components entry `pBuf[0]`
+  // of the lookup table is, nothing for an index out of the table.
+  const CPDF_ColorSpace* GetBaseCS() const { return base_cs_.Get(); }
+  std::optional<DataVector<float>> GetBaseComponents(
+      pdfium::span<const float> pBuf) const;
 
  private:
   CPDF_IndexedCS();

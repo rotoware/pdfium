@@ -86,7 +86,7 @@ uint32_t CPDF_IndexedCS::v_Load(CPDF_Document* doc,
   return 1;
 }
 
-std::optional<FX_RGB_STRUCT<float>> CPDF_IndexedCS::GetRGB(
+std::optional<DataVector<float>> CPDF_IndexedCS::GetBaseComponents(
     pdfium::span<const float> pBuf) const {
   int32_t index = static_cast<int32_t>(pBuf[0]);
   if (index < 0 || index > max_index_) {
@@ -110,5 +110,14 @@ std::optional<FX_RGB_STRUCT<float>> CPDF_IndexedCS::GetRGB(
         comp.min +
         comp.max * lookup_table_[index * component_min_max_.size() + i] / 255;
   }
-  return base_cs_->GetRGB(comps);
+  return comps;
+}
+
+std::optional<FX_RGB_STRUCT<float>> CPDF_IndexedCS::GetRGB(
+    pdfium::span<const float> pBuf) const {
+  std::optional<DataVector<float>> comps = GetBaseComponents(pBuf);
+  if (!comps.has_value()) {
+    return std::nullopt;
+  }
+  return base_cs_->GetRGB(comps.value());
 }

@@ -991,6 +991,13 @@ FPDF_EXPORT void FPDF_CALLCONV FPDF_ClosePage(FPDF_PAGE page);
 //          None.
 FPDF_EXPORT void FPDF_CALLCONV FPDF_CloseDocument(FPDF_DOCUMENT document);
 
+// pdfking: render `document`'s pages as the press plate `plate` (Cyan,
+// Magenta, Yellow, Black or a spot's name), gray from white (no ink) to
+// black (full ink), overprint honored; NULL or "" to render in color. Set
+// before any page is rendered.
+FPDF_EXPORT void FPDF_CALLCONV PDFKING_SetPlate(FPDF_DOCUMENT document,
+                                                FPDF_BYTESTRING plate);
+
 // Function: FPDF_DeviceToPage
 //          Convert the screen coordinates of a point to page coordinates.
 // Parameters:

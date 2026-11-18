@@ -181,6 +181,8 @@ struct Options {
   bool lcd_text = false;
   bool no_nativetext = false;
   bool grayscale = false;
+  // pdfking: the press plate to render, empty for color
+  std::string plate;
   bool forced_color = false;
   bool fill_to_stroke = false;
   bool limit_cache = false;
@@ -776,6 +778,8 @@ bool ParseCommandLine(const std::vector<std::string>& args,
         return false;
       }
       options->render_repeats_as_string = value;
+    } else if (ParseSwitchKeyValue(cur_arg, "--plate=", &value)) {
+      options->plate = value;
     } else if (ParseSwitchKeyValue(cur_arg, "--scale=", &value)) {
       if (!options->scale_factor_as_string.empty()) {
         fprintf(stderr, "Duplicate --scale argument\n");
@@ -1779,6 +1783,10 @@ void Processor::ProcessPdf(const std::string& name,
   if (!doc) {
     PrintLastError();
     return;
+  }
+
+  if (!options().plate.empty()) {
+    PDFKING_SetPlate(doc.get(), options().plate.c_str());
   }
 
   if (!FPDF_DocumentHasValidCrossReferenceTable(doc.get())) {

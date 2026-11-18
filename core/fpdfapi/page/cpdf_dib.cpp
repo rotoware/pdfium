@@ -20,6 +20,7 @@
 #include "core/fpdfapi/page/cpdf_image.h"
 #include "core/fpdfapi/page/cpdf_imageobject.h"
 #include "core/fpdfapi/page/cpdf_indexedcs.h"
+#include "core/fpdfapi/page/cpdf_plate.h"
 #include "core/fpdfapi/page/jpx_decode_conversion.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
@@ -361,6 +362,11 @@ bool CPDF_DIB::LoadColorInfo(const CPDF_Dictionary* pFormResources,
   }
   if (!color_space_) {
     return false;
+  }
+  // pdfking: on a plate, the image in its gray; a soft mask stays a mask
+  if (!is_mask_ && !document_->GetPlate().IsEmpty()) {
+    color_space_ = PlateColorSpace(std::move(color_space_),
+                                   document_->GetPlate());
   }
 
   // If the checks above failed to find a colorspace, and the next line to set
@@ -905,6 +911,7 @@ bool CPDF_DIB::IsJBigImage() const {
 CPDF_DIB::LoadState CPDF_DIB::StartLoadMaskDIB(
     RetainPtr<const CPDF_Stream> mask_stream) {
   mask_ = pdfium::MakeRetain<CPDF_DIB>(document_, std::move(mask_stream));
+  mask_->is_mask_ = true;
   LoadState ret =
       mask_->StartLoadDIBBase(false, nullptr, nullptr,
                               CPDF_ColorSpace::Family::kUnknown, false, {0, 0});

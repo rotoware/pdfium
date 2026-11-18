@@ -74,6 +74,8 @@ source_set("page") {
     "cpdf_pathobject.cpp",
     "cpdf_pathobject.h",
     "cpdf_pattern.cpp",
+    "cpdf_plate.cpp",
+    "cpdf_plate.h",
     "cpdf_pattern.h",
     "cpdf_patterncs.cpp",
     "cpdf_patterncs.h",

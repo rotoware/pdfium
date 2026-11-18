@@ -18,11 +18,14 @@
 #include "core/fpdfapi/page/cpdf_dib.h"
 #include "core/fpdfapi/page/cpdf_function.h"
 #include "core/fpdfapi/page/cpdf_meshstream.h"
+#include "core/fpdfapi/page/cpdf_plate.h"
+#include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/fpdf_parser_utility.h"
 #include "core/fpdfapi/render/cpdf_devicebuffer.h"
+#include "core/fpdfapi/render/cpdf_rendercontext.h"
 #include "core/fpdfapi/render/cpdf_renderoptions.h"
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/check_op.h"
@@ -1022,6 +1025,16 @@ void CPDF_RenderShading::Draw(CFX_RenderDevice* pDevice,
   RetainPtr<CPDF_ColorSpace> pColorSpace = pPattern->GetCS();
   if (!pColorSpace) {
     return;
+  }
+  // pdfking: on a plate, the shading in its gray; an overprinting one in
+  // inks off the plate leaves it as it was
+  const ByteString& plate = context->GetDocument()->GetPlate();
+  if (!plate.IsEmpty()) {
+    if (pCurObj && pCurObj->general_state().GetFillOP() &&
+        !PlateMarked(pColorSpace.Get(), plate)) {
+      return;
+    }
+    pColorSpace = PlateColorSpace(std::move(pColorSpace), plate);
   }
 
   FX_ARGB background = 0;

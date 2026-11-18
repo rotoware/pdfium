@@ -32,6 +32,7 @@
 #include "core/fpdfapi/page/cpdf_pageimagecache.h"
 #include "core/fpdfapi/page/cpdf_pageobject.h"
 #include "core/fpdfapi/page/cpdf_pathobject.h"
+#include "core/fpdfapi/page/cpdf_plate.h"
 #include "core/fpdfapi/page/cpdf_shadingobject.h"
 #include "core/fpdfapi/page/cpdf_shadingpattern.h"
 #include "core/fpdfapi/page/cpdf_textobject.h"
@@ -482,6 +483,19 @@ FX_ARGB CPDF_RenderStatus::GetFillArgbForType3(CPDF_PageObject* pObj) const {
 
   int32_t alpha =
       static_cast<int32_t>((pObj->general_state().GetFillAlpha() * 255));
+  // pdfking: on a plate, its gray; nothing where the plate is left as it was
+  const ByteString& plate = context_->GetDocument()->GetPlate();
+  const CPDF_Color* plate_color = pColorState->GetFillColor();
+  if (!plate.IsEmpty() && plate_color && !plate_color->IsPattern()) {
+    std::optional<float> ink = PlateInk(
+        plate_color->GetColorSpace(), plate_color->GetComponents(), plate,
+        pObj->general_state().GetFillOP(), pObj->general_state().GetOPMode());
+    if (!ink.has_value()) {
+      return 0;
+    }
+    int gray = FXSYS_roundf((1.0f - ink.value()) * 255);
+    return ArgbEncode(alpha, gray, gray, gray);
+  }
   RetainPtr<const CPDF_Object> pTR = pObj->general_state().GetTR();
   if (pTR) {
     if (!pObj->general_state().GetTransferFunc()) {
@@ -514,6 +528,19 @@ FX_ARGB CPDF_RenderStatus::GetStrokeArgb(CPDF_PageObject* pObj) const {
 
   int32_t alpha = static_cast<int32_t>(pObj->general_state().GetStrokeAlpha() *
                                        255);  // not rounded.
+  // pdfking: on a plate, its gray; nothing where the plate is left as it was
+  const ByteString& plate = context_->GetDocument()->GetPlate();
+  const CPDF_Color* plate_color = pColorState->GetStrokeColor();
+  if (!plate.IsEmpty() && plate_color && !plate_color->IsPattern()) {
+    std::optional<float> ink = PlateInk(
+        plate_color->GetColorSpace(), plate_color->GetComponents(), plate,
+        pObj->general_state().GetStrokeOP(), pObj->general_state().GetOPMode());
+    if (!ink.has_value()) {
+      return 0;
+    }
+    int gray = FXSYS_roundf((1.0f - ink.value()) * 255);
+    return ArgbEncode(alpha, gray, gray, gray);
+  }
   RetainPtr<const CPDF_Object> pTR = pObj->general_state().GetTR();
   if (pTR) {
     if (!pObj->general_state().GetTransferFunc()) {
@@ -1296,6 +1323,19 @@ void CPDF_RenderStatus::ProcessPathPattern(
 
 bool CPDF_RenderStatus::ProcessImage(CPDF_ImageObject* pImageObj,
                                      const CFX_Matrix& mtObj2Device) {
+  // pdfking: an overprinting image in inks off the plate leaves it as it was
+  const ByteString& plate = context_->GetDocument()->GetPlate();
+  if (!plate.IsEmpty() && pImageObj->general_state().GetFillOP()) {
+    RetainPtr<const CPDF_Object> cs_obj =
+        pImageObj->GetImage()->GetDict()->GetDirectObjectFor("ColorSpace");
+    RetainPtr<CPDF_ColorSpace> cs =
+        cs_obj ? CPDF_DocPageData::FromDocument(context_->GetDocument())
+                     ->GetColorSpace(cs_obj.Get(), nullptr)
+               : nullptr;
+    if (cs && !PlateMarked(cs.Get(), plate)) {
+      return true;
+    }
+  }
   CPDF_ImageRenderer render(this);
   if (render.Start(pImageObj, mtObj2Device)) {
     render.Continue(nullptr);

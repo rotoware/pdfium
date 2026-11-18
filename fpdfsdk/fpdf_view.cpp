@@ -907,6 +907,14 @@ FPDF_EXPORT void FPDF_CALLCONV FPDF_ClosePage(FPDF_PAGE page) {
   pPage->AsPDFPage()->ClearView();
 }
 
+FPDF_EXPORT void FPDF_CALLCONV PDFKING_SetPlate(FPDF_DOCUMENT document,
+                                                FPDF_BYTESTRING plate) {
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  if (doc) {
+    doc->SetPlate(plate ? ByteString(plate) : ByteString());
+  }
+}
+
 FPDF_EXPORT void FPDF_CALLCONV FPDF_CloseDocument(FPDF_DOCUMENT document) {
   // Take it back across the API and throw it away,
   std::unique_ptr<CPDF_Document>(CPDFDocumentFromFPDFDocument(document));
