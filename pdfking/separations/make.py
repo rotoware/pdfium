@@ -9,6 +9,7 @@ import sys
 import zlib
 
 CELL, GAP, MARGIN = 30, 6, 20
+LEFT, TOP = 110, 50  # room for the row and column labels
 TINTS = [0, 1, 2, 3, 5, 10, 20, 25, 30, 40, 50, 60, 70, 75, 80, 90, 95, 97, 99, 100]
 P021 = "PANTONE 021 C"  # orange, alternate M .53 Y 1
 P354 = "PANTONE 354 C"  # green, alternate C .8 Y .9
@@ -26,11 +27,9 @@ class Doc:
     def __init__(self, rows, cols):
         self.rows, self.cols = rows, cols
         self.objs = []
-        self.res = {"ColorSpace": {}, "ExtGState": {}, "XObject": {}, "Shading": {}, "Pattern": {}}
+        self.res = {"ColorSpace": {}, "ExtGState": {}, "XObject": {}, "Shading": {}, "Pattern": {}, "Font": {}}
         self.content = []
         self.cells = []
-        self.W = 2 * MARGIN + len(cols) * CELL + (len(cols) - 1) * GAP
-        self.H = 2 * MARGIN + len(rows) * CELL + (len(rows) - 1) * GAP
 
     def obj(self, body):
         self.objs.append(body if isinstance(body, bytes) else body.encode())
@@ -46,8 +45,28 @@ class Doc:
         self.res[kind][key] = value
         return key
 
+    @property
+    def W(self):
+        return LEFT + MARGIN + len(self.cols) * CELL + (len(self.cols) - 1) * GAP
+
+    @property
+    def H(self):
+        return TOP + MARGIN + len(self.rows) * CELL + (len(self.rows) - 1) * GAP
+
     def xy(self, r, c):
-        return MARGIN + c * (CELL + GAP), self.H - MARGIN - CELL - r * (CELL + GAP)
+        return LEFT + c * (CELL + GAP), self.H - TOP - CELL - r * (CELL + GAP)
+
+    def labels(self):
+        """rows on the left, columns above, 5pt Helvetica in black"""
+        esc = lambda t: t.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+        out = ["BT /Fl 5 Tf 0 g"]
+        for r, label in enumerate(self.rows):
+            x, y = self.xy(r, 0)
+            out.append(f"1 0 0 1 {MARGIN} {y + 13} Tm ({esc(label)}) Tj")
+        for c, label in enumerate(self.cols):
+            x, y = self.xy(0, c)
+            out.append(f"0 1 -1 0 {x + 17} {y + CELL + 4} Tm ({esc(label)}) Tj")
+        return "\n".join(out + ["ET\n"])
 
     def cell(self, r, c, ops, half=False, row=None, col=None):
         x, y = self.xy(r, c)
@@ -57,7 +76,8 @@ class Doc:
     def write(self, path):
         page_res = " ".join(f"/{k} << " + " ".join(f"/{n} {v}" for n, v in d.items()) + " >>"
                             for k, d in self.res.items() if d)
-        content = "".join(self.content).encode()
+        self.res["Font"] = {"Fl": "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"}
+        content = (self.labels() + "".join(self.content)).encode()
         contents = self.stream("", content)
         page = self.obj(f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {self.W} {self.H}]"
                         f" /Contents {contents} /Resources << {page_res} >> >>")
@@ -273,7 +293,6 @@ def images_rgb():
              ("Indexed RGB 8", idx, 8, lambda t: (t,)),
              ("Lab 8", lab, 8, lambda t: (0.5, t, 0.5))]
     d.rows = [s[0] for s in specs]
-    d.H = 2 * MARGIN + len(d.rows) * CELL + (len(d.rows) - 1) * GAP
     image_rows(d, specs)
     return d
 
@@ -296,7 +315,6 @@ def images_spot():
              ("DeviceN Cyan+021", mixed, 8, lambda t: (t, 0.5)),
              ("Indexed over 354", idx, 8, lambda t: (t,))]
     d.rows = [s[0] for s in specs]
-    d.H = 2 * MARGIN + len(d.rows) * CELL + (len(d.rows) - 1) * GAP
     image_rows(d, specs)
     return d
 
@@ -330,8 +348,6 @@ def overprint():
              ("OP image 354", op1, f"15 0 0 30 15 0 cm /{img} Do"),
              ("OP shading 354", op1, f"15 0 15 30 re W n /{sh} sh")]
     d.rows, d.cols = ["over CMYK .3 + 021 .5"], [c[0] for c in cases]
-    d.W = 2 * MARGIN + len(d.cols) * CELL + (len(d.cols) - 1) * GAP
-    d.H = 2 * MARGIN + CELL
     base = f"0.3 0.3 0.3 0.3 k {box()}\nq /{op1} gs /{s021} cs 0.5 scn {box()} Q"
     for c, (label, g, top) in enumerate(cases):
         d.cell(0, c, f"{base}\nq {'/%s gs ' % g if g else ''}{top} Q", half=True)
@@ -351,8 +367,6 @@ def shadings():
              ("Sep 021", cs[s021], "[0]", "[1]"),
              ("DeviceN", cs[sn], "[1 0]", "[0 1]")]
     d.rows, d.cols = [s[0] for s in specs], ["axial 1 cell", "axial 4 cells", "", "", "radial"]
-    d.W = 2 * MARGIN + 5 * CELL + 4 * GAP
-    d.H = 2 * MARGIN + len(d.rows) * CELL + (len(d.rows) - 1) * GAP
     for r, (label, space, c0, c1) in enumerate(specs):
         fn = f"<< /FunctionType 2 /Domain [0 1] /C0 {c0} /C1 {c1} /N 1 >>"
         a1 = d.add("Shading", f"A{r}", d.obj(f"<< /ShadingType 2 /ColorSpace {space} /Coords [0 0 {CELL} 0] /Function {fn} >>"))
@@ -393,8 +407,6 @@ def groups():
              ("smask luminosity", form("F5", f"0 0 0 1 k {box()}", "")),
              ("smask alpha", form("F6", f"0 0 0 1 k {box()}", ""))]
     d.rows, d.cols = ["over Y .5 + 021 .5"], [c[0] for c in cases]
-    d.W = 2 * MARGIN + len(d.cols) * CELL + (len(d.cols) - 1) * GAP
-    d.H = 2 * MARGIN + CELL
     base = f"0 0 0.5 0 k {box()} /{s021} cs 0.5 scn {box(0, 0, 15)}"
     for c, (label, f) in enumerate(cases):
         mask = {"smask luminosity": f"/{smask_l} gs ", "smask alpha": f"/{smask_a} gs "}.get(label, "")
@@ -411,7 +423,6 @@ def icc():
     cmyk_cs = d.add("ColorSpace", "IC", d.obj(f"[/ICCBased {d.stream('/N 4', cmyk)}]"))
     rows = ["ICC RGB vec R", "ICC RGB vec mix", "ICC CMYK vec C", "ICC CMYK vec all"]
     d.rows = rows + ["ICC RGB img mix", "ICC CMYK img all"]
-    d.H = 2 * MARGIN + len(d.rows) * CELL + (len(d.rows) - 1) * GAP
     for c, t in enumerate(TINTS):
         x = t / 100
         ops = [f"/{rgb_cs} cs {x:.4f} 0 0 sc", f"/{rgb_cs} cs {x:.4f} 0.5 {1 - x:.4f} sc",
@@ -436,9 +447,287 @@ def icc():
     return d
 
 
+# ── 11 images: every filter, space, depth and mask, drawn 6 ways ─────────
+# each cell: a base of CMYK .3 with 021 .5 on the left half and 354 .5 on
+# the right half overprinted, so every plate has ink under, then a 2x2
+# image over the whole cell (a sample 15pt, 30px) drawn as the column says
+IMAGE_MODES = [("knockout", None), ("OP OPM1", "/OP true /op true /OPM 1"), ("OP OPM0", "/OP true /op true /OPM 0"),
+               ("ca .5", "/ca 0.5"), ("Multiply", "/BM /Multiply"), ("OP ca .5", "/OP true /op true /OPM 1 /ca 0.5")]
+LEVELS = (0, 0.25, 0.6, 1)  # pixel i, component k: LEVELS[(i + k) % 4]
+
+
+def pixels(n, scale=1):
+    """2x2 samples of n components, 0..1, each repeated scale x scale"""
+    px = [[LEVELS[(i + k) % 4] for k in range(n)] for i in range(4)]
+    return [px[(y // scale) * 2 + x // scale] for y in range(2 * scale) for x in range(2 * scale)]
+
+
+def pack(samples, bpc, w):
+    """samples (rows of w pixels, each a list of 0..1) to bytes, rows padded"""
+    maxv = (1 << bpc) - 1
+    out = bytearray()
+    for y in range(len(samples) // w):
+        acc, n = 0, 0
+        for px in samples[y * w:(y + 1) * w]:
+            for x in px:
+                q = round(x * maxv)
+                if bpc == 16:
+                    out += struct.pack(">H", q)
+                    continue
+                acc, n = (acc << bpc) | q, n + bpc
+                while n >= 8:
+                    n -= 8
+                    out.append((acc >> n) & 0xFF)
+        if n:
+            out.append((acc << (8 - n)) & 0xFF)
+    return bytes(out)
+
+
+def lzw(data):
+    """LZWDecode, EarlyChange 1"""
+    table = {bytes([i]): i for i in range(256)}
+    nxt, width, acc, nbits, out = 258, 9, 0, 0, bytearray()
+
+    def emit(code):
+        nonlocal acc, nbits
+        acc, nbits = (acc << width) | code, nbits + width
+        while nbits >= 8:
+            nbits -= 8
+            out.append((acc >> nbits) & 0xFF)
+
+    emit(256)
+    w = b""
+    for c in data:
+        wc = w + bytes([c])
+        if wc in table:
+            w = wc
+            continue
+        emit(table[w])
+        table[wc], nxt = nxt, nxt + 1
+        if nxt + 1 >= 1 << width:
+            width += 1
+        w = bytes([c])
+    if w:
+        emit(table[w])
+    emit(257)
+    if nbits:
+        out.append((acc << (8 - nbits)) & 0xFF)
+    return bytes(out)
+
+
+def runlength(data):
+    out = bytearray()
+    for i in range(0, len(data), 128):
+        chunk = data[i:i + 128]
+        out += bytes([len(chunk) - 1]) + chunk
+    return bytes(out + b"\x80")
+
+
+def predict_png(data, row):
+    """PNG Up predictor on every row: Predictor 12"""
+    out, prev = bytearray(), bytes(row)
+    for y in range(0, len(data), row):
+        line = data[y:y + row]
+        out += b"\x02" + bytes((a - b) & 0xFF for a, b in zip(line, prev))
+        prev = line
+    return bytes(out)
+
+
+def predict_tiff(data, row, n):
+    """TIFF predictor 2, 8 bits: each sample minus the one n bytes left"""
+    out = bytearray()
+    for y in range(0, len(data), row):
+        line = data[y:y + row]
+        out += bytes((line[i] - (line[i - n] if i >= n else 0)) & 0xFF for i in range(len(line)))
+    return bytes(out)
+
+
+def pil_image(samples, w, mode):
+    from PIL import Image
+    data = bytes(round(x * 255) for px in samples for x in px)
+    return Image.frombytes(mode, (w, len(samples) // w), data)
+
+
+def encoded(fmt, samples, w, mode):
+    """samples saved by PIL as fmt: JPEG, JPEG2000 bytes, or a CCITT G4 strip"""
+    import io
+    buf = io.BytesIO()
+    im = pil_image(samples, w, mode)
+    if fmt == "JPEG":
+        im.save(buf, "JPEG", quality=100, subsampling=0)
+        return buf.getvalue()
+    if fmt == "JPEG2000":
+        im.save(buf, "JPEG2000", irreversible=False)
+        return buf.getvalue()
+    # G4: the TIFF's one strip
+    from PIL import Image
+    im.convert("1").save(buf, "TIFF", compression="group4")
+    t = Image.open(io.BytesIO(buf.getvalue()))
+    off, cnt = t.tag_v2[273][0], t.tag_v2[279][0]
+    return buf.getvalue()[off:off + cnt]
+
+
+def jbig2(mmr, w, h):
+    """an embedded JBIG2 stream: page information, an immediate lossless
+    generic region coded MMR (T.6, as G4), end of page"""
+    def seg(num, kind, data):
+        return struct.pack(">IBBBI", num, kind, 0, 1, len(data)) + data
+    page = struct.pack(">IIIIBH", w, h, 0, 0, 0, 0)
+    region = struct.pack(">IIIIB", w, h, 0, 0, 0) + b"\x01" + mmr
+    return seg(0, 48, page) + seg(1, 39, region) + seg(2, 49, b"")
+
+
+def images():
+    d = Doc([], [m for m, _ in IMAGE_MODES])
+    s021, s354 = d.spots()
+    sn = d.devicen()
+    cs = d.res["ColorSpace"]
+    for c, (_, g) in enumerate(IMAGE_MODES):
+        if g:
+            d.gs(f"G{c}", f"<< {g} >>")
+    op1 = d.gs("OPB", "<< /OP true /op true /OPM 1 >>")
+    srgb = open(f"{ICC}/sRGB Profile.icc", "rb").read()
+    cmyk = open(f"{ICC}/Generic CMYK Profile.icc", "rb").read()
+    gray = open(f"{ICC}/Generic Gray Gamma 2.2 Profile.icc", "rb").read()
+    icc_rgb = d.obj(f"[/ICCBased {d.stream('/N 3', srgb)}]")
+    icc_cmyk = d.obj(f"[/ICCBased {d.stream('/N 4', cmyk)}]")
+    icc_gray = d.obj(f"[/ICCBased {d.stream('/N 1', gray)}]")
+    sep = lambda n, alt: d.obj(f"[/Separation {name(n)} /DeviceCMYK << /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [{alt}] /N 1 >>]")
+    fn4 = lambda ps: d.stream("/FunctionType 4 /Domain [0 1 0 1] /Range [0 1 0 1 0 1 0 1]", ps, compress=False)
+    pal_rgb = bytes(b for i in range(4) for b in (round(255 * LEVELS[i]), round(255 * (1 - LEVELS[i])), 128))
+    pal_cmyk = bytes(b for i in range(4) for b in (round(255 * LEVELS[i]), 0, round(255 * (1 - LEVELS[i])), 40))
+    pal_256 = bytes(b for i in range(256) for b in (i, 255 - i, (i * 3) % 256))
+    spaces = {
+        "G": "/DeviceGray", "RGB": "/DeviceRGB", "CMYK": "/DeviceCMYK",
+        "IdxRGB": f"[/Indexed /DeviceRGB 3 <{pal_rgb.hex()}>]",
+        "IdxRGB256": f"[/Indexed /DeviceRGB 255 <{pal_256.hex()}>]",
+        "IdxCMYK": f"[/Indexed /DeviceCMYK 3 <{pal_cmyk.hex()}>]",
+        "Idx021": f"[/Indexed {cs[s021]} 3 <00406699>]",
+        "IdxN": f"[/Indexed {cs[sn]} 3 <0000 40ff 9940 ff99>]",
+        "021": cs[s021], "354": cs[s354], "N": cs[sn],
+        "NCyan021": f"[/DeviceN [/Cyan {name(P021)}] /DeviceCMYK {fn4(b'{dup 0.53 mul exch 0}')}]",
+        "NNone": f"[/DeviceN [{name(P354)} /None] /DeviceCMYK {fn4(b'{pop dup 0.8 mul exch 0 exch 0.9 mul 0}')}]",
+        "SepCyan": sep("Cyan", "1 0 0 0"), "SepBlack": sep("Black", "0 0 0 1"), "SepAll": sep("All", "1 1 1 1"),
+        "NCMYK": f"[/DeviceN [/Cyan /Magenta /Yellow /Black] /DeviceCMYK {d.stream('/FunctionType 4 /Domain [0 1 0 1 0 1 0 1] /Range [0 1 0 1 0 1 0 1]', b'{}', compress=False)}]",
+        "ICCG": icc_gray, "ICCRGB": icc_rgb, "ICCCMYK": icc_cmyk,
+        "CalG": "[/CalGray << /WhitePoint [0.9505 1 1.089] /Gamma 2.2 >>]",
+        "CalRGB": "[/CalRGB << /WhitePoint [0.9505 1 1.089] >>]",
+        "Lab": "[/Lab << /WhitePoint [0.9505 1 1.089] /Range [-128 127 -128 127] >>]",
+    }
+    ncomp = {"G": 1, "RGB": 3, "CMYK": 4, "021": 1, "354": 1, "N": 2, "NCyan021": 2, "NNone": 2, "SepCyan": 1,
+             "SepBlack": 1, "SepAll": 1, "NCMYK": 4, "ICCG": 1, "ICCRGB": 3, "ICCCMYK": 4, "CalG": 1,
+             "CalRGB": 3, "Lab": 3}
+    indexed = {"IdxRGB": 3, "IdxRGB256": 255, "IdxCMYK": 3, "Idx021": 3, "IdxN": 3}
+    # rows: (label, dict entries, data), dict without /Width /Height
+    rows = []
+
+    def raw(label, space, bpc, extra="", filt=None, smask=None):
+        if space in indexed:
+            # indices 0 to hival, as many as the depth holds
+            maxv = (1 << bpc) - 1
+            samples = [[min(round(LEVELS[i] * 3) * indexed[space] // 3, maxv) / maxv] for i in range(4)]
+        else:
+            samples = pixels(ncomp[space])
+        data = pack(samples, bpc, 2)
+        rows.append((label, f"/Width 2 /Height 2 /ColorSpace {spaces[space]} /BitsPerComponent {bpc} {extra}", data, filt, smask))
+
+    for space in ("G", "RGB", "CMYK"):
+        for bpc in (1, 2, 4, 8, 16):
+            raw(f"{space} {bpc}", space, bpc)
+    for space, bpcs in (("IdxRGB", (1, 2, 4, 8)), ("IdxCMYK", (2, 8)), ("Idx021", (2, 8)), ("IdxN", (8,)),
+                        ("IdxRGB256", (8,))):
+        for bpc in bpcs:
+            raw(f"{space} {bpc}", space, bpc)
+    for space in ("021", "354", "N", "NCyan021", "NNone", "SepCyan", "SepBlack", "SepAll", "NCMYK",
+                  "ICCG", "ICCRGB", "ICCCMYK", "CalG", "CalRGB", "Lab"):
+        raw(f"{space} 8", space, 8)
+    raw("021 4", "021", 4)
+    raw("N 16", "N", 16)
+    # Decode arrays
+    raw("G 8 Decode 1 0", "G", 8, "/Decode [1 0]")
+    raw("CMYK 8 Decode inv", "CMYK", 8, "/Decode [1 0 1 0 1 0 1 0]")
+    raw("021 8 Decode 1 0", "021", 8, "/Decode [1 0]")
+    raw("CMYK 8 Decode .2 .8", "CMYK", 8, "/Decode [0.2 0.8 0 1 0 1 0.2 0.8]")
+    raw("IdxRGB 8 Decode 3 0", "IdxRGB", 8, "/Decode [3 0]")
+    raw("CMYK 8 Interpolate", "CMYK", 8, "/Interpolate true")
+    # masks: color key, explicit stencil, soft
+    raw("RGB 8 color key", "RGB", 8, "/Mask [0 70 0 70 0 255]")
+    raw("CMYK 8 color key", "CMYK", 8, "/Mask [0 70 0 255 0 255 0 255]")
+    raw("IdxRGB 8 color key", "IdxRGB", 8, "/Mask [0 1]")
+    stencil = d.stream("/Type /XObject /Subtype /Image /Width 2 /Height 2 /ImageMask true /BitsPerComponent 1", bytes([0x80, 0x40]))
+    raw("CMYK 8 /Mask stencil", "CMYK", 8, f"/Mask {stencil}")
+    soft = d.stream("/Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8", bytes([255, 128, 64, 0]))
+    raw("CMYK 8 SMask", "CMYK", 8, f"/SMask {soft}")
+    raw("021 8 SMask", "021", 8, f"/SMask {soft}")
+    raw("RGB 8 SMask", "RGB", 8, f"/SMask {soft}")
+    soft_big = d.stream("/Type /XObject /Subtype /Image /Width 4 /Height 4 /ColorSpace /DeviceGray /BitsPerComponent 8", bytes(range(0, 256, 16)))
+    raw("CMYK 8 SMask 4x4", "CMYK", 8, f"/SMask {soft_big}")
+    # filters over CMYK 8
+    data = pack(pixels(4), 8, 2)
+    base = f"/Width 2 /Height 2 /ColorSpace /DeviceCMYK /BitsPerComponent 8"
+    import base64
+    rows += [("CMYK Flate", base, zlib.compress(data), "/FlateDecode", None),
+             ("CMYK AHx", base, data.hex().encode() + b">", "/ASCIIHexDecode", None),
+             ("CMYK A85", base, base64.a85encode(data) + b"~>", "/ASCII85Decode", None),
+             ("CMYK LZW", base, lzw(data), "/LZWDecode", None),
+             ("CMYK RL", base, runlength(data), "/RunLengthDecode", None),
+             ("CMYK A85+Flate", base, base64.a85encode(zlib.compress(data)) + b"~>", "[/ASCII85Decode /FlateDecode]", None),
+             ("CMYK Flate PNG", base + " /DecodeParms << /Predictor 12 /Colors 4 /BitsPerComponent 8 /Columns 2 >>",
+              zlib.compress(predict_png(data, 8)), "/FlateDecode", None),
+             ("CMYK Flate TIFF", base + " /DecodeParms << /Predictor 2 /Colors 4 /BitsPerComponent 8 /Columns 2 >>",
+              zlib.compress(predict_tiff(data, 8, 4)), "/FlateDecode", None)]
+    # DCT and JPX: 16x16, a sample an 8x8 block, flat so decoders agree
+    for label, space, mode, n, extra in (("DCT Gray", "/DeviceGray", "L", 1, ""), ("DCT RGB", "/DeviceRGB", "RGB", 3, ""),
+                                          ("DCT CMYK", "/DeviceCMYK", "CMYK", 4, ""),
+                                          ("DCT CMYK Decode inv", "/DeviceCMYK", "CMYK", 4, "/Decode [1 0 1 0 1 0 1 0]"),
+                                          ("DCT 021", cs[s021], "L", 1, "")):
+        rows.append((label, f"/Width 16 /Height 16 /ColorSpace {space} /BitsPerComponent 8 {extra}",
+                     encoded("JPEG", pixels(n, 8), 16, mode), "/DCTDecode", None))
+    for label, space, mode, n in (("JPX Gray", "/DeviceGray", "L", 1), ("JPX RGB", "/DeviceRGB", "RGB", 3),
+                                  ("JPX RGB own cs", None, "RGB", 3), ("JPX CMYK", "/DeviceCMYK", "CMYK", 4)):
+        rows.append((label, f"/Width 16 /Height 16" + (f" /ColorSpace {space} /BitsPerComponent 8" if space else ""),
+                     encoded("JPEG2000", pixels(n, 8), 16, mode), "/JPXDecode", None))
+    g4 = encoded("G4", pixels(1, 8), 16, "L")
+    rows += [("CCITT G4 Gray", "/Width 16 /Height 16 /ColorSpace /DeviceGray /BitsPerComponent 1"
+              " /DecodeParms << /K -1 /Columns 16 /Rows 16 /BlackIs1 true >>", g4, "/CCITTFaxDecode", None),
+             ("CCITT G4 021", f"/Width 16 /Height 16 /ColorSpace {cs[s021]} /BitsPerComponent 1"
+              " /DecodeParms << /K -1 /Columns 16 /Rows 16 /BlackIs1 true >>", g4, "/CCITTFaxDecode", None),
+             ("JBIG2 MMR Gray", "/Width 16 /Height 16 /ColorSpace /DeviceGray /BitsPerComponent 1",
+              jbig2(g4, 16, 16), "/JBIG2Decode", None)]
+    # image masks: painted in the fill color
+    mask = bytes([0x80, 0x40])
+    masks = [("ImageMask k", "0.2 0.4 0 0.6 k", ""), ("ImageMask k Decode", "0.2 0.4 0 0.6 k", "/Decode [1 0]"),
+             ("ImageMask 021", f"/{s021} cs 0.8 scn", ""), ("ImageMask rgb", "1 0 0 rg", ""),
+             ("ImageMask N", f"/{sn} cs 0.3 0.9 scn", ""), ("ImageMask g", "0.4 g", "")]
+    ops = {}
+    for label, fill, extra in masks:
+        rows.append((label, f"/Width 2 /Height 2 /ImageMask true /BitsPerComponent 1 {extra}", mask, None, None))
+        ops[label] = fill
+    # inline images
+    inline = {"inline CMYK AHx": f"BI /W 2 /H 2 /CS /CMYK /BPC 8 /F /AHx ID {data.hex()}> EI",
+              "inline G 4 AHx": f"BI /W 2 /H 2 /CS /G /BPC 4 /F /AHx ID {pack(pixels(1), 4, 2).hex()}> EI",
+              "inline Idx AHx": f"BI /W 2 /H 2 /CS /Ix /BPC 8 /F /AHx ID {pack([[i / 255] for i in (0, 1, 2, 3)], 8, 2).hex()}> EI",
+              "inline 021 AHx": f"BI /W 2 /H 2 /CS /S021 /BPC 8 /F /AHx ID {pack(pixels(1), 8, 2).hex()}> EI",
+              "inline mask k": f"0.2 0.4 0 0.6 k BI /W 2 /H 2 /IM true /F /AHx ID 8040> EI"}
+    d.add("ColorSpace", "Ix", d.obj(spaces["IdxCMYK"]))
+    d.rows = [r[0] for r in rows] + list(inline)
+    base_ops = (f"0.3 0.3 0.3 0.3 k {box()}\nq /{op1} gs /{s021} cs 0.5 scn {box(0, 0, 15)}"
+                f" /{s354} cs 0.5 scn {box(15, 0, 15)} Q")
+    for r, (label, dict_body, data_, filt, smask) in enumerate(rows):
+        f = f" /Filter {filt}" if filt else ""
+        key = d.add("XObject", f"Im{r}", d.obj(f"<< /Type /XObject /Subtype /Image {dict_body}{f} /Length {len(data_)} >>\nstream\n".encode()
+                                                + data_ + b"\nendstream"))
+        for c, (_, g) in enumerate(IMAGE_MODES):
+            d.cell(r, c, f"{base_ops}\nq {'/G%d gs ' % c if g else ''}{ops.get(label, '')} {CELL} 0 0 {CELL} 0 0 cm /{key} Do Q")
+    for i, (label, op) in enumerate(inline.items()):
+        for c, (_, g) in enumerate(IMAGE_MODES):
+            d.cell(len(rows) + i, c, f"{base_ops}\nq {'/G%d gs ' % c if g else ''}{CELL} 0 0 {CELL} 0 0 cm {op} Q")
+    return d
+
+
 TESTS = [("00-sheet", sheet), ("01-tints", tints), ("02-blends", blends), ("03-rgb-gray-cie-vectors", rgb_vectors),
          ("04-images-process-gray", images_process), ("05-images-rgb", images_rgb), ("06-images-spot", images_spot),
-         ("07-overprint", overprint), ("08-shadings", shadings), ("09-groups-softmasks", groups), ("10-icc", icc)]
+         ("07-overprint", overprint), ("08-shadings", shadings), ("09-groups-softmasks", groups), ("10-icc", icc), ("11-images", images)]
 
 if __name__ == "__main__":
     out = sys.argv[1]

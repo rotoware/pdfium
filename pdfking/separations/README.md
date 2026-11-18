@@ -6,12 +6,29 @@ them (`-dUseFastColor`, overprint simulated).
 
 - `make.py <dir>`: the test PDFs, one topic each (`00-sheet` all inks + RGB
   together, tints, blends, RGB/CIE, images, overprint, shadings, groups,
-  ICC), every cell on whole points: at 144dpi a 30pt cell is 60x60px.
-  Each PDF has a `.json` of its cells.
+  ICC, `11-images`: every filter, color space, depth, Decode, mask and
+  inline image, each drawn knockout, overprint OPM 1 / 0, ca .5, Multiply,
+  overprint + ca .5 over a base inked on all six plates), every cell on
+  whole points: at 144dpi a 30pt cell is 60x60px. Rows and columns are
+  labelled (left out of the comparison). Each PDF has a `.json` of its cells.
 - `run.py <dir> [test...]`: per PDF gs `tiffsep` and pdfium per plate at
   144dpi, no anti-aliasing; writes `<dir>/out/<test>/` (composites, per
   plate gs / pdfium / diff, orange off by 1, red more) and
   `<dir>/out/SUMMARY.md`. Needs `out/native/pdfium_test` built and gs.
 
-    python3 make.py /tmp/separations/pdf
-    python3 run.py /tmp/separations           # numpy + Pillow
+    uv run --with pillow --with numpy python make.py /tmp/separations/pdf
+    uv run --with pillow --with numpy python run.py /tmp/separations
+
+Known differences left (everything else byte-identical, plates in cells):
+
+- gs tiffsep only, pam right: under overprint OPM 1 a process color over
+  cyan knocks the cyan plate out; a 1-bit image (gray, indexed, CCITT,
+  JBIG2) with ca < 1 or a blend mode is painted as its 0 color over the
+  whole image, then the 1 pixels.
+- Lab: gs converts through ICC with black generation, pdfium does not.
+- `/Interpolate true`: gs smooths the image, pdfium (no smoothing) not.
+- shadings: pdfium steps them in 256, radial off up to 12.
+- knockout groups (pdfium has none), soft masks under a moved CTM (pdfium
+  drops them), a 1px stroke edge under overprint.
+- composites: gs renders CMYK + spots and converts to RGB (a print
+  preview), pdfium renders in RGB.

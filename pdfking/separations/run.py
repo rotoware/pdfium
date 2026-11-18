@@ -50,13 +50,19 @@ for pdf in sorted(glob.glob(f"{suite}/pdf/*.pdf")):
     subprocess.run(gsargs + ["-sDEVICE=tiffsep", f"-sOutputFile={work}/gs.tif", pdf], check=True)
     subprocess.run(gsargs + ["-sDEVICE=png16m", f"-sOutputFile={out}/composite-gs.png", pdf], check=True)
     pdfium(pdf, f"{work}/color").save(f"{out}/composite-pdfium.png")
+    # what is compared: the cells, not the labels (fonts differ)
+    inside = np.zeros((meta["H"] * K, meta["W"] * K), bool)
+    for cell in meta["cells"]:
+        top, left = (meta["H"] - cell["y"] - meta["cell"]) * K, cell["x"] * K
+        inside[top:top + meta["cell"] * K, left:left + meta["cell"] * K] = True
     # the composites: what each shows of the page in RGB
     ca = np.asarray(Image.open(f"{out}/composite-gs.png").convert("RGB"), int)
     cb = np.asarray(Image.open(f"{out}/composite-pdfium.png").convert("RGB"), int)
     h, w = min(ca.shape[0], cb.shape[0]), min(ca.shape[1], cb.shape[1])
     cd = np.abs(ca[:h, :w] - cb[:h, :w]).max(-1)
     Image.fromarray(np.clip(cd * 4, 0, 255).astype(np.uint8)).save(f"{out}/composite-diff.png")
-    summary.append(f"| {test} | composite RGB | {100 * (cd == 0).mean():.3f}% | {cd.max()} | | mean {cd.mean():.1f} |")
+    cd = np.where(inside[:h, :w], cd, 0)
+    summary.append(f"| {test} | composite RGB | {100 * (cd[inside[:h, :w]] == 0).mean():.3f}% | {cd.max()} | | mean {cd[inside[:h, :w]].mean():.1f} |")
     # the plates gs separated: the four process inks, then its spots
     plates = ["Cyan", "Magenta", "Yellow", "Black"]
     plates += sorted(urllib.parse.unquote(os.path.basename(p)[3:-5]) for p in glob.glob(f"{work}/gs(*).tif")
@@ -70,7 +76,7 @@ for pdf in sorted(glob.glob(f"{suite}/pdf/*.pdf")):
         pd.save(f"{out}/{i}-{plate}-pdfium.png")
         a, b = np.asarray(gs, int), np.asarray(pd, int)
         h, w = min(a.shape[0], b.shape[0]), min(a.shape[1], b.shape[1])
-        d = (255 - a[:h, :w]) - (255 - b[:h, :w])  # ink, gs - pdfium
+        d = np.where(inside[:h, :w], (255 - a[:h, :w]) - (255 - b[:h, :w]), 0)  # ink, gs - pdfium, in cells
         vis = np.stack([b[:h, :w]] * 3, -1).astype(np.uint8)
         vis[np.abs(d) == 1] = (255, 160, 0)
         vis[np.abs(d) > 1] = (255, 0, 0)
@@ -85,7 +91,7 @@ for pdf in sorted(glob.glob(f"{suite}/pdf/*.pdf")):
                 ga = 255 - a[top + 2:top + meta["cell"] * K - 2, left + 2:left + meta["cell"] * K - 2]
                 off.append((m, f"{cell['row']} / {cell['col']} (gs {np.unique(ga)[:4].tolist()}, d {m})"))
         off.sort(reverse=True)
-        line = (f"| {test} | {plate} | {100 * (d == 0).mean():.3f}% | {np.abs(d).max()} | {len(off)}/{len(meta['cells'])} | "
+        line = (f"| {test} | {plate} | {100 * (d[inside[:h, :w]] == 0).mean():.3f}% | {np.abs(d).max()} | {len(off)}/{len(meta['cells'])} | "
                 + "; ".join(o for _, o in off[:3]) + " |")
         summary.append(line)
         print("  ", line)
