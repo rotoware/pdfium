@@ -59,6 +59,7 @@
 #include "core/fxcrt/fx_system.h"
 #include "core/fxcrt/notreached.h"
 #include "core/fxcrt/span.h"
+#include "core/fxcrt/span_util.h"
 #include "core/fxcrt/stl_util.h"
 #include "core/fxcrt/unowned_ptr.h"
 #include "core/fxcrt/zip.h"
@@ -450,10 +451,116 @@ bool CPDF_RenderStatus::ProcessForm(const CPDF_FormObject* pFormObj,
   status.Initialize(this, &pFormObj->graphic_states());
   {
     CFX_RenderDevice::StateRestorer restorer(device_);
-    status.RenderObjectList(pFormObj->form(), matrix);
+    if (pFormObj->form()->GetTransparency().IsKnockout() &&
+        device_->GetBitmap()) {
+      status.RenderKnockoutGroup(pFormObj, matrix, mtObj2Device);
+    } else {
+      status.RenderObjectList(pFormObj->form(), matrix);
+    }
     stopped_ = status.stopped_;
   }
   return true;
+}
+
+// pdfking: a knockout group (ISO 32000-2 11.4.6.2): each object painted on
+// the group's backdrop as it was when the group began, not on the objects
+// before it, and the result kept where the object paints (its shape) alone.
+// Each object is drawn twice: alone on a clear layer, opaque and Normal, its
+// shape; then on the backdrop put back, where its opacity and blend apply.
+// Overprint is off in the group, as gs paints one.
+void CPDF_RenderStatus::RenderKnockoutGroup(const CPDF_FormObject* pFormObj,
+                                            const CFX_Matrix& matrix,
+                                            const CFX_Matrix& mtObj2Device) {
+  RetainPtr<CFX_DIBitmap> device = device_->GetBitmap();
+  FX_RECT rect = pFormObj->GetTransformedBBox(mtObj2Device);
+  rect.Intersect(device_->GetClipBox());
+  rect.Intersect(FX_RECT(0, 0, device->GetWidth(), device->GetHeight()));
+  if (rect.IsEmpty()) {
+    return;
+  }
+  const size_t bytes = device->GetBPP() / 8;
+  const size_t width = rect.Width();
+  RetainPtr<CFX_DIBitmap> backdrop = device->ClipTo(rect);
+  RetainPtr<CFX_DIBitmap> group = device->ClipTo(rect);
+  if (!backdrop || !group) {
+    return;
+  }
+  // blended on the pixels there (the backdrop put back), not on the page
+  // rendered again up to the object, which brings back what it knocks out
+  transparency_ = CPDF_Transparency();
+  transparency_.SetGroup();
+  CFX_Matrix layer_matrix = matrix;
+  layer_matrix.Translate(-rect.left, -rect.top);
+  CFX_FloatRect clip_rect = matrix.GetInverse().TransformRect(
+      CFX_FloatRect(device_->GetClipBox()));
+  for (const auto& obj : *pFormObj->form()) {
+    if (obj.get() == stop_obj_) {
+      stopped_ = true;
+      return;
+    }
+    if (!obj || !obj->IsActive() || obj->GetRect().left > clip_rect.right ||
+        obj->GetRect().right < clip_rect.left ||
+        obj->GetRect().bottom > clip_rect.top ||
+        obj->GetRect().top < clip_rect.bottom) {
+      continue;
+    }
+    CPDF_PageObject* pObj = obj.get();
+    const CPDF_GeneralState saved = pObj->general_state();
+    pObj->mutable_general_state().SetFillOP(false);
+    pObj->mutable_general_state().SetStrokeOP(false);
+    const CPDF_GeneralState painted_state = pObj->general_state();
+    pObj->mutable_general_state().SetBlendType(BlendMode::kNormal);
+    pObj->mutable_general_state().SetFillAlpha(1.0f);
+    pObj->mutable_general_state().SetStrokeAlpha(1.0f);
+    // its shape: alone on a clear layer, where it leaves any alpha
+    auto layer = pdfium::MakeRetain<CFX_DIBitmap>();
+    if (!layer->Create(rect.Width(), rect.Height(), FXDIB_Format::kBgra)) {
+      pObj->mutable_general_state() = saved;
+      return;
+    }
+    std::unique_ptr<CFX_RenderDevice> layer_device =
+        CFX_RenderDevice::CreateForBitmap(layer);
+    if (!layer_device) {
+      pObj->mutable_general_state() = saved;
+      return;
+    }
+    CPDF_RenderStatus shape(context_, layer_device.get());
+    shape.SetOptions(options_);
+    shape.SetFormResource(form_resource_);
+    shape.SetInGroup(true);
+    shape.Initialize(this, nullptr);
+    shape.RenderSingleObject(pObj, layer_matrix);
+    pObj->mutable_general_state() = painted_state;
+    // painted on the group's backdrop
+    for (int row = 0; row < rect.Height(); ++row) {
+      fxcrt::Copy(backdrop->GetScanline(row).first(width * bytes),
+                  device->GetWritableScanline(rect.top + row)
+                      .subspan(rect.left * bytes, width * bytes));
+    }
+    RenderSingleObject(pObj, matrix);
+    pObj->mutable_general_state() = saved;
+    if (stopped_) {
+      return;
+    }
+    // kept in the group where it paints
+    for (int row = 0; row < rect.Height(); ++row) {
+      pdfium::span<const uint8_t> painted =
+          device->GetScanline(rect.top + row).subspan(rect.left * bytes);
+      pdfium::span<uint8_t> kept = group->GetWritableScanline(row);
+      pdfium::span<const uint8_t> alpha = layer->GetScanline(row);
+      for (size_t col = 0; col < width; ++col) {
+        if (alpha[col * 4 + 3]) {
+          fxcrt::Copy(painted.subspan(col * bytes, bytes),
+                      kept.subspan(col * bytes, bytes));
+        }
+      }
+    }
+  }
+  for (int row = 0; row < rect.Height(); ++row) {
+    fxcrt::Copy(group->GetScanline(row).first(width * bytes),
+                device->GetWritableScanline(rect.top + row)
+                    .subspan(rect.left * bytes, width * bytes));
+  }
 }
 
 bool CPDF_RenderStatus::ProcessPath(CPDF_PathObject* path_obj,

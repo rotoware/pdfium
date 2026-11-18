@@ -14,13 +14,17 @@ class CPDF_Transparency {
 
   bool IsGroup() const { return group_; }
   bool IsIsolated() const { return isolated_; }
+  // pdfking: /K, each object painted on the group's backdrop alone
+  bool IsKnockout() const { return knockout_; }
 
   void SetGroup() { group_ = true; }
   void SetIsolated() { isolated_ = true; }
+  void SetKnockout() { knockout_ = true; }
 
  private:
   bool group_ = false;
   bool isolated_ = false;
+  bool knockout_ = false;
 };
 
 #endif  // CORE_FPDFAPI_PAGE_CPDF_TRANSPARENCY_H_

@@ -164,6 +164,9 @@ void CPDF_PageObjectHolder::LoadTransparencyInfo() {
   if (pGroup->GetIntegerFor(pdfium::transparency::kI)) {
     transparency_.SetIsolated();
   }
+  if (pGroup->GetBooleanFor("K", false)) {
+    transparency_.SetKnockout();
+  }
 }
 
 size_t CPDF_PageObjectHolder::GetActivePageObjectCount() const {

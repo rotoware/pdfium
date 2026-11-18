@@ -72,6 +72,10 @@ class CPDF_RenderStatus {
 
   void RenderObjectList(const CPDF_PageObjectHolder* pObjectHolder,
                         const CFX_Matrix& mtObj2Device);
+  // pdfking: a knockout group's objects, each on the group's backdrop
+  void RenderKnockoutGroup(const CPDF_FormObject* pFormObj,
+                           const CFX_Matrix& matrix,
+                           const CFX_Matrix& mtObj2Device);
   void RenderSingleObject(CPDF_PageObject* pObj,
                           const CFX_Matrix& mtObj2Device);
   bool ContinueSingleObject(CPDF_PageObject* pObj,

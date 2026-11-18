@@ -31,7 +31,7 @@ Known differences left (everything else byte-identical, plates in cells):
 - Lab: gs converts through ICC with black generation, pdfium does not.
 - `/Interpolate true`: gs smooths the image, pdfium (no smoothing) not.
 - shadings: pdfium steps them in 256, radial off up to 12.
-- knockout groups (pdfium has none), soft masks under a moved CTM (pdfium
+- soft masks under a moved CTM (pdfium
   drops them), strokes: gs paints the pixel the edge lies on, pdfium does not (one
   pixel wider in gs).
 - composites: gs renders CMYK + spots and converts to RGB (a print
