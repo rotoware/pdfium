@@ -1028,13 +1028,14 @@ void CPDF_RenderShading::Draw(CFX_RenderDevice* pDevice,
   }
   // pdfking: on a plate, the shading in its gray; an overprinting one in
   // inks off the plate leaves it as it was
-  const ByteString& plate = context->GetDocument()->GetPlate();
-  if (!plate.IsEmpty()) {
+  if (const CPDF_Plate* plate = GetPlate(context->GetDocument())) {
     if (pCurObj && pCurObj->general_state().GetFillOP() &&
-        !PlateMarked(pColorSpace.Get(), plate)) {
+        !plate->Marks(pColorSpace.Get())) {
       return;
     }
-    pColorSpace = PlateColorSpace(std::move(pColorSpace), plate);
+    pColorSpace = PlateColorSpace(
+        std::move(pColorSpace), plate,
+        pCurObj ? pCurObj->general_state().GetRenderIntent() : 0);
   }
 
   FX_ARGB background = 0;

@@ -84,6 +84,11 @@ void CPDF_GeneralState::SetRenderIntent(const ByteString& ri) {
   ref_.GetPrivateCopy()->render_intent_ = RI_StringToId(ri);
 }
 
+int CPDF_GeneralState::GetRenderIntent() const {
+  const StateData* data = ref_.GetObject();
+  return data ? data->render_intent_ : 0;
+}
+
 ByteString CPDF_GeneralState::GetBlendMode() const {
   switch (GetBlendType()) {
     case BlendMode::kNormal:

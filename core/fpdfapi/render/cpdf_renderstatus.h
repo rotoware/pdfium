@@ -7,7 +7,9 @@
 #ifndef CORE_FPDFAPI_RENDER_CPDF_RENDERSTATUS_H_
 #define CORE_FPDFAPI_RENDER_CPDF_RENDERSTATUS_H_
 
+#include <array>
 #include <memory>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -30,6 +32,8 @@ class CPDF_Font;
 class CPDF_FormObject;
 class CPDF_ImageObject;
 class CPDF_ImageRenderer;
+class CPDF_Inks;  // pdfking
+struct CPDF_InkLayer;  // pdfking
 class CPDF_Object;
 class CPDF_PageObject;
 class CPDF_PageObjectHolder;
@@ -129,7 +133,24 @@ class CPDF_RenderStatus {
       bool stroke);
 
  private:
-  // pdfking: plates and groups, in cpdf_renderstatus_plate.cpp
+  // pdfking: plates, inks and groups, in cpdf_renderstatus_plate.cpp
+  std::optional<FX_ARGB> SeparationArgb(const CPDF_Color* color,
+                                        const CPDF_GeneralState& state,
+                                        bool stroke) const;
+  CPDF_Inks* Inks() const;
+  bool SeparateObject(CPDF_PageObject* obj, const CFX_Matrix& mtObj2Device);
+  bool InkPlanes(CPDF_PageObject* obj, const CFX_Matrix& mtObj2Device);
+  bool PlateLeavesObject(CPDF_PageObject* obj) const;
+  bool PlateOverprintsBeneath(CPDF_PageObject* obj,
+                              const CFX_Matrix& mtObj2Device);
+  bool InkAtOnce(CPDF_PageObject* obj);
+  void InkNonSeparable(CPDF_PageObject* obj, const CFX_Matrix& mtObj2Device);
+  void InkCompositeLayers(const std::array<CPDF_InkLayer, 4>& layers,
+                          const std::array<CFX_RenderDevice*, 4>& planes,
+                          BlendMode mode);
+  void InkGroup(CPDF_PageObject* obj, const CFX_Matrix& mtObj2Device);
+  std::unique_ptr<CPDF_RenderStatus> PlaneStatus(CFX_RenderDevice* plane);
+  bool KeepInkLayer(RetainPtr<CFX_DIBitmap> bitmap, const FX_RECT& rect);
   bool PlateLeavesImage(CPDF_ImageObject* image) const;
   bool PlateMixesGroup(const CPDF_FormObject* form) const;
   void RenderGroup(CPDF_RenderStatus* status,
@@ -142,7 +163,8 @@ class CPDF_RenderStatus {
   void MixGroup(const CPDF_FormObject* form,
                 const CFX_Matrix& mtObj2Device,
                 const FX_RECT& rect,
-                const CFX_DIBitmap& backdrop);
+                const std::vector<RetainPtr<CFX_DIBitmap>>& backdrops);
+  std::vector<RetainPtr<CFX_DIBitmap>> PlateBitmaps() const;
 
   bool ProcessTransparency(CPDF_PageObject* PageObj,
                            const CFX_Matrix& mtObj2Device);
@@ -225,6 +247,11 @@ class CPDF_RenderStatus {
 #endif
   bool drop_objects_ = false;
   bool load_mask_ = false;
+  // pdfking: where ProcessTransparency leaves its layer instead of
+  // compositing it (InkNonSeparable)
+  CPDF_InkLayer* ink_layer_ = nullptr;
+  // pdfking: drawing a knockout group's object (RenderKnockoutGroup)
+  bool in_knockout_ = false;
   bool in_group_ = false;
   CPDF_ColorSpace::Family group_family_ = CPDF_ColorSpace::Family::kUnknown;
   FX_ARGB t3_fill_color_ = 0;

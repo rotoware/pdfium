@@ -2,7 +2,9 @@
 switch separate renders) and pdfium --plate, 144dpi, no anti-aliasing; per
 PDF write <suite>/out/<name>/: the PDF, both composites (the plates merged), per plate gs,
 pdfium and a diff (orange off by 1, red more), and a SUMMARY.md over all.
-usage: run.py <suite> [name...]"""
+--ink: pdfium's plates all in one render (plates_bench --ink,
+PDFKING_RenderInks) instead of one pdfium_test --plate each.
+usage: run.py <suite> [--ink] [name...]"""
 import glob
 import json
 import os
@@ -15,6 +17,7 @@ import numpy as np
 from PIL import Image
 
 PDFIUM = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../out/native/pdfium_test")
+BENCH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../out/native/plates_bench")
 DPI, K = 144, 2
 # the color each ink prints on white, full: the composites mix them
 INK_RGB = {"Cyan": (0, 174, 239), "Magenta": (236, 0, 140), "Yellow": (255, 242, 0), "Black": (35, 31, 32),
@@ -23,7 +26,8 @@ INK_RGB = {"Cyan": (0, 174, 239), "Magenta": (236, 0, 140), "Yellow": (255, 242,
 SPOT_CMYK = {"PANTONE 021 C": (0, 0.53, 1, 0), "PANTONE 354 C": (0.8, 0, 0.9, 0)}
 CMYK_ICC = "/System/Library/ColorSync/Profiles/Generic CMYK Profile.icc"
 suite = sys.argv[1]
-only = sys.argv[2:]
+one_render = "--ink" in sys.argv[2:]
+only = [a for a in sys.argv[2:] if a != "--ink"]
 
 
 def flat(path):
@@ -71,10 +75,19 @@ for pdf in sorted(glob.glob(f"{suite}/pdf/*.pdf")):
                      if urllib.parse.unquote(os.path.basename(p)[3:-5]) not in plates)
     print(f"== {test}: plates {plates}")
     inks = {"gs": [], "pdfium": []}
+    if one_render:
+        # the plates pdfium finds on its own (PDFKING_GetPageInks), as gs does
+        found = subprocess.run([BENCH, pdf, str(DPI), "256", "auto", "--ink"], check=True,
+                               capture_output=True, text=True).stdout.split("\n")[:-1]
+        summary.append(f"| {test} | inks found | {'same as gs' if sorted(found) == sorted(plates) else 'gs ' + str(plates) + ' pdfium ' + str(found)} | | | |")
+
+        subprocess.run([BENCH, pdf, str(DPI), "256", ",".join(plates), f"--dump={work}/ink", "--ink"],
+                       check=True, capture_output=True)
     for i, plate in enumerate(plates, 1):
         tif = [p for p in glob.glob(f"{work}/gs(*).tif") if urllib.parse.unquote(os.path.basename(p)[3:-5]) == plate][0]
         gs = Image.open(tif).convert("L")
-        pd = pdfium(pdf, f"{work}/{i}", "--printing", f"--plate={plate}").convert("L")
+        pd = (Image.open(f"{work}/ink-{plate}.pgm") if one_render else
+              pdfium(pdf, f"{work}/{i}", "--printing", f"--plate={plate}").convert("L"))
         gs.save(f"{out}/{i}-{plate}-gs.png")
         pd.save(f"{out}/{i}-{plate}-pdfium.png")
         a, b = np.asarray(gs, int), np.asarray(pd, int)
@@ -116,6 +129,8 @@ for pdf in sorted(glob.glob(f"{suite}/pdf/*.pdf")):
             amount = ink[..., None] / 255
             if plate in SPOT_CMYK:
                 cmyk = 1 - (1 - cmyk) * (1 - amount * np.array(SPOT_CMYK[plate]))
+            elif plate not in ("Cyan", "Magenta", "Yellow", "Black"):
+                continue  # a spot of unknown alternate: left out
             else:
                 k = ["Cyan", "Magenta", "Yellow", "Black"].index(plate)
                 cmyk[..., k] = 1 - (1 - cmyk[..., k]) * (1 - amount[..., 0])
@@ -139,6 +154,6 @@ for pdf in sorted(glob.glob(f"{suite}/pdf/*.pdf")):
         "render-gs.png         gs own color render (png16m), reference only\n"
         "render-pdfium.png     pdfium own color render, reference only\n"
         "N-<ink>-gs.png        ghostscript tiffsep plate (black = full ink)\n"
-        "N-<ink>-pdfium.png    pdfium --plate=<ink>\n"
+        "N-<ink>-pdfium.png    pdfium --plate=<ink> (--ink: all plates in one render)\n"
         "N-<ink>-diff.png      pdfium plate, pixels off by 1 orange, by more red\n")
 open(f"{suite}/out/SUMMARY.md", "w").write("\n".join(summary) + "\n")

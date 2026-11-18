@@ -32,7 +32,7 @@
 #include "core/fpdfapi/page/cpdf_pageimagecache.h"
 #include "core/fpdfapi/page/cpdf_pageobject.h"
 #include "core/fpdfapi/page/cpdf_pathobject.h"
-#include "core/fpdfapi/page/cpdf_plate.h"
+#include "core/fpdfapi/page/cpdf_inks.h"
 #include "core/fpdfapi/page/cpdf_shadingobject.h"
 #include "core/fpdfapi/page/cpdf_shadingpattern.h"
 #include "core/fpdfapi/page/cpdf_textobject.h"
@@ -248,6 +248,9 @@ void CPDF_RenderStatus::RenderSingleObject(CPDF_PageObject* pObj,
     return;
   }
   ProcessClipPath(pObj->clip_path(), mtObj2Device);
+  if (SeparateObject(pObj, mtObj2Device)) {  // pdfking
+    return;
+  }
   if (ProcessTransparency(pObj, mtObj2Device)) {
     return;
   }
@@ -275,6 +278,9 @@ bool CPDF_RenderStatus::ContinueSingleObject(CPDF_PageObject* pObj,
   }
 
   ProcessClipPath(pObj->clip_path(), mtObj2Device);
+  if (SeparateObject(pObj, mtObj2Device)) {  // pdfking
+    return false;
+  }
   if (ProcessTransparency(pObj, mtObj2Device)) {
     return false;
   }
@@ -487,9 +493,8 @@ FX_ARGB CPDF_RenderStatus::GetFillArgbForType3(CPDF_PageObject* pObj) const {
 
   int32_t alpha =
       static_cast<int32_t>((pObj->general_state().GetFillAlpha() * 255));
-  if (std::optional<FX_ARGB> argb = PlateArgb(  // pdfking
-          context_->GetDocument()->GetPlate(), pColorState->GetFillColor(),
-          pObj->general_state(), /*stroke=*/false)) {
+  if (std::optional<FX_ARGB> argb = SeparationArgb(  // pdfking
+          pColorState->GetFillColor(), pObj->general_state(), false)) {
     return argb.value();
   }
   RetainPtr<const CPDF_Object> pTR = pObj->general_state().GetTR();
@@ -524,9 +529,8 @@ FX_ARGB CPDF_RenderStatus::GetStrokeArgb(CPDF_PageObject* pObj) const {
 
   int32_t alpha = static_cast<int32_t>(pObj->general_state().GetStrokeAlpha() *
                                        255);  // not rounded.
-  if (std::optional<FX_ARGB> argb = PlateArgb(  // pdfking
-          context_->GetDocument()->GetPlate(), pColorState->GetStrokeColor(),
-          pObj->general_state(), /*stroke=*/true)) {
+  if (std::optional<FX_ARGB> argb = SeparationArgb(  // pdfking
+          pColorState->GetStrokeColor(), pObj->general_state(), true)) {
     return argb.value();
   }
   RetainPtr<const CPDF_Object> pTR = pObj->general_state().GetTR();
@@ -571,8 +575,10 @@ void CPDF_RenderStatus::ProcessClipPath(const CPDF_ClipPath& ClipPath,
       device_->SetClip_PathFill(empty_path, nullptr,
                                 CFX_FillRenderOptions::WindingOptions());
     } else {
-      device_->SetClip_PathFill(*pPath, &mtObj2Device,
-                                CFX_FillRenderOptions(ClipPath.GetClipType(i)));
+      CFX_FillRenderOptions fill_options(ClipPath.GetClipType(i));
+      // pdfking: aliased as fills are, the pixels a fill of it inks
+      fill_options.aliased_path = options_.GetOptions().bNoPathSmooth;
+      device_->SetClip_PathFill(*pPath, &mtObj2Device, fill_options);
     }
   }
 
@@ -643,9 +649,15 @@ bool CPDF_RenderStatus::ProcessTransparency(CPDF_PageObject* pPageObj,
   if (pPageObj->IsForm() && PlateMixesGroup(pPageObj->AsForm())) {  // pdfking
     return false;
   }
+  // pdfking: a form that is no group passes its soft mask and blend on to
+  // its objects, each painted with them (ISO 32000-2 8.10.1), never as one
+  if (pPageObj->IsForm() &&
+      !pPageObj->AsForm()->form()->GetTransparency().IsGroup()) {
+    return false;
+  }
   const BlendMode blend_type =
       PlateBlendMode(pPageObj->general_state().GetBlendType(),
-                     context_->GetDocument()->GetPlate());
+                     GetPlate(context_->GetDocument()));
   RetainPtr<CPDF_Dictionary> pSMaskDict =
       pPageObj->mutable_general_state().GetMutableSoftMask();
   if (pSMaskDict) {
@@ -766,6 +778,9 @@ bool CPDF_RenderStatus::ProcessTransparency(CPDF_PageObject* pPageObj,
   transparency = transparency_;
   if (pPageObj->IsForm()) {
     transparency.SetGroup();
+  }
+  if (KeepInkLayer(bitmap_device->GetBitmap(), rect)) {  // pdfking
+    return true;
   }
   CompositeDIBitmap(bitmap_device->GetBitmap(), rect.left, rect.top,
                     /*mask_argb=*/0, /*alpha=*/1.0f, blend_type, transparency);
@@ -1512,14 +1527,12 @@ RetainPtr<CFX_DIBitmap> CPDF_RenderStatus::LoadSMask(
   status.SetLoadMask(bLuminosity);
   status.SetFormResource(std::move(pFormResource));
   status.SetDropObjects(drop_objects_);
-  // pdfking: a soft mask is measured in its colors, never as the plate: off
-  // while it renders
-  CPDF_Document* doc = context_->GetDocument();
-  const ByteString plate = doc->GetPlate();
-  doc->SetPlate(ByteString());
   status.Initialize(nullptr, nullptr);
-  status.RenderObjectList(&form, matrix);
-  doc->SetPlate(plate);
+  {
+    // pdfking: a soft mask is measured in its colors, never as a plate
+    ScopedColorRender color_render(context_->GetDocument());
+    status.RenderObjectList(&form, matrix);
+  }
 
   auto result_mask = pdfium::MakeRetain<CFX_DIBitmap>();
   if (!result_mask->Create(width, height, FXDIB_Format::k8bppMask)) {

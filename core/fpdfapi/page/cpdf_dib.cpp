@@ -364,9 +364,10 @@ bool CPDF_DIB::LoadColorInfo(const CPDF_Dictionary* pFormResources,
     return false;
   }
   // pdfking: on a plate, the image in its gray; a soft mask stays a mask
-  if (!is_mask_ && !document_->GetPlate().IsEmpty()) {
-    color_space_ = PlateColorSpace(std::move(color_space_),
-                                   document_->GetPlate());
+  if (!is_mask_ && GetPlate(document_)) {
+    color_space_ = PlateColorSpace(
+        std::move(color_space_), GetPlate(document_),
+        CPDF_Plate::Intent(dict_->GetNameFor("Intent")));
   }
 
   // If the checks above failed to find a colorspace, and the next line to set
@@ -693,7 +694,7 @@ RetainPtr<CFX_DIBitmap> CPDF_DIB::LoadJpxBitmap(
 
   // pdfking: with no color space given, on a plate the one the JPX's
   // channels are in, as gs reads it: gray, CMYK or RGB
-  if (!color_space_ && !is_mask_ && !document_->GetPlate().IsEmpty() &&
+  if (!color_space_ && !is_mask_ && GetPlate(document_) &&
       (image_info.channels == 1 || image_info.channels == 3 ||
        (image_info.channels == 4 && image_info.colorspace == OPJ_CLRSPC_CMYK))) {
     color_space_ = PlateColorSpace(
@@ -701,7 +702,7 @@ RetainPtr<CFX_DIBitmap> CPDF_DIB::LoadJpxBitmap(
             image_info.channels == 1   ? CPDF_ColorSpace::Family::kDeviceGray
             : image_info.channels == 3 ? CPDF_ColorSpace::Family::kDeviceRGB
                                        : CPDF_ColorSpace::Family::kDeviceCMYK),
-        document_->GetPlate());
+        GetPlate(document_), CPDF_Plate::Intent(dict_->GetNameFor("Intent")));
     components_ = color_space_->ComponentCount();
   }
   auto maybe_conversion =

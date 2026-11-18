@@ -14,7 +14,6 @@
 
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_parser.h"
-#include "core/fxcrt/bytestring.h"
 #include "core/fxcrt/fx_memory.h"
 #include "core/fxcrt/observed_ptr.h"
 #include "core/fxcrt/retain_ptr.h"
@@ -117,12 +116,6 @@ class CPDF_Document : public Observable,
   // When `get_owner_perms` is true, returns full permissions if unlocked by
   // owner.
   uint32_t GetUserPermissions(bool get_owner_perms) const;
-
-  // pdfking: the press plate the pages render as (see cpdf_plate.h), empty
-  // to render them in color. Set before a page is first rendered: images are
-  // cached as converted.
-  void SetPlate(const ByteString& plate) { plate_ = plate; }
-  const ByteString& GetPlate() const { return plate_; }
 
   // PageDataIface wrappers, try to avoid explicit getter calls.
   RetainPtr<CPDF_StreamAcc> GetFontFileStreamAcc(
@@ -245,7 +238,6 @@ class CPDF_Document : public Observable,
   std::unique_ptr<LinkListIface> links_context_;
   std::set<uint32_t> modified_apstream_ids_;
   std::vector<uint32_t> page_list_;  // Page number to page's dict objnum.
-  ByteString plate_;  // pdfking
 
   // Must be second to last.
   StockFontClearer stock_font_clearer_;

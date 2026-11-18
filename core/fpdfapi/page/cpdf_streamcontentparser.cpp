@@ -823,12 +823,18 @@ void CPDF_StreamContentParser::AddForm(RetainPtr<CPDF_Stream> pStream,
   status.mutable_graph_state() = cur_states_->graph_state();
   status.mutable_color_state() = cur_states_->color_state();
   status.mutable_text_state() = cur_states_->text_state();
+  CFX_Matrix matrix =
+      cur_states_->current_transformation_matrix() * mt_content_to_user_;
+  // pdfking: a soft mask its objects inherit is placed where it was set, in
+  // this content's space: in the form's, as one set inside it is
+  if (status.general_state().GetSoftMask()) {
+    status.mutable_general_state().SetSMaskMatrix(
+        *status.general_state().GetSMaskMatrix() * matrix.GetInverse());
+  }
   auto form = std::make_unique<CPDF_Form>(document_, page_resources_,
                                           std::move(pStream), resources_.Get());
   form->ParseContent(&status, nullptr, recursion_state_);
 
-  CFX_Matrix matrix =
-      cur_states_->current_transformation_matrix() * mt_content_to_user_;
   auto pFormObj = std::make_unique<CPDF_FormObject>(GetCurrentStreamIndex(),
                                                     std::move(form), matrix);
   pFormObj->SetResourceName(name);
@@ -1094,7 +1100,9 @@ void CPDF_StreamContentParser::Handle_SetRGBColor_Stroke() {
       GetNumbers(3));
 }
 
-void CPDF_StreamContentParser::Handle_SetRenderIntent() {}
+void CPDF_StreamContentParser::Handle_SetRenderIntent() {
+  cur_states_->mutable_general_state().SetRenderIntent(GetString(0));  // pdfking
+}
 
 void CPDF_StreamContentParser::Handle_CloseStrokePath() {
   Handle_ClosePath();

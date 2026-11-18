@@ -81,8 +81,10 @@ class Doc:
         self.res["Font"]["Fl"] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"
         content = (self.labels() + "".join(self.content)).encode()
         contents = self.stream("", content)
+        annots = " ".join(self.obj(a) for a in getattr(self, "annots", []))
         page = self.obj(f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {self.W} {self.H}]"
-                        f" /Contents {contents} /Resources << {page_res} >> >>")
+                        f" /Contents {contents} /Resources << {page_res} >>"
+                        + (f" /Annots [{annots}]" if annots else "") + " >>")
         objs = [b"<< /Type /Catalog /Pages 2 0 R >>", f"<< /Type /Pages /Kids [{page}] /Count 1 >>".encode()] + self.objs
         out = bytearray(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n")
         offsets = []
@@ -876,9 +878,147 @@ def knockout():
     return d
 
 
+# ── 15 non-separable blend modes (and the separable ones 02 lacks) ───────
+# A source over the right half of a backdrop, per mode, drawn plain, at ca
+# .5, as an isolated group's content, as a non-isolated group's, as a
+# knockout group's, and as a group composited with the mode
+NS_MODES = ["Hue", "Saturation", "Color", "Luminosity"]
+NS_WAYS = ["plain", "ca .5", "in group", "in isolated", "in knockout", "group BM", "in group ca .5",
+           "in isolated ca .5", "in isolated on own"]
+
+
+def nonseparable():
+    d = Doc([], [])
+    s021, s354 = d.spots()
+    backdrops = [("CMYK", "0.6 0.3 0.1 0.2 k"), ("K", "0 0 0 0.5 k"), ("RGB", "0.2 0.6 0.9 rg"),
+                 ("Y + 021", f"0 0 0.5 0 k {box()} /{s021} cs 0.5 scn")]
+    sources = [("CMYK", "0.1 0.7 0.4 0.1 k"), ("354", f"/{s354} cs 0.7 scn"), ("RGB", "0.9 0.3 0.2 rg"),
+               ("K", "0 0 0 0.8 k")]
+    cs = d.res["ColorSpace"]
+    d.rows = [f"{s} over {b}" for b, _ in backdrops for s, _ in sources]
+    d.cols = [f"{m} {w}" for m in NS_MODES for w in NS_WAYS] + ["SoftLight", "ColorDodge"]
+    gs = {}
+    for m in NS_MODES + ["SoftLight", "ColorDodge"]:
+        gs[m] = d.gs(f"B{m}", f"<< /BM /{m} >>")
+        gs[m + "A"] = d.gs(f"B{m}A", f"<< /BM /{m} /ca 0.5 >>")
+    groups = {"in group": "/Group << /S /Transparency >>", "in isolated": "/Group << /S /Transparency /I true >>",
+              "in knockout": "/Group << /S /Transparency /K true >>", "group BM": "/Group << /S /Transparency >>",
+              "in group ca .5": "/Group << /S /Transparency >>",
+              "in isolated ca .5": "/Group << /S /Transparency /I true >>",
+              "in isolated on own": "/Group << /S /Transparency /I true >>"}
+    half = d.gs("H", "<< /ca 0.5 >>")
+    n = 0
+    for r, ((bl, bops), (sl, sops)) in enumerate((b, s) for b in backdrops for s in sources):
+        for c, col in enumerate(d.cols):
+            m, way = (col.split(" ", 1) + ["plain"])[:2]
+            src = f"{sops} {box(15, 0, 15)}"
+            if way == "plain":
+                top = f"q /{gs[m]} gs {src} Q"
+            elif way == "ca .5":
+                top = f"q /{gs[m + 'A']} gs {src} Q"
+            else:
+                inner = src if way == "group BM" else f"/G gs {src}"
+                if way == "in isolated on own":
+                    # the backdrop inside the group too: the blend sees it
+                    inner = f"{bops.replace(f'/{s021}', '/S021')} {box()} {inner}"
+                n += 1
+                f = d.add("XObject", f"N{n}", d.stream(
+                    f"/Type /XObject /Subtype /Form /BBox [0 0 {CELL} {CELL}] {groups[way]}"
+                    f" /Resources << /ExtGState << /G {d.res['ExtGState'][gs[m]]} >>"
+                    f" /ColorSpace << /{s354} {cs[s354]} /S021 {cs[s021]} >> >>", inner.encode()))
+                top = (f"q /{gs[m]} gs /{f} Do Q" if way == "group BM" else
+                       f"q /{half} gs /{f} Do Q" if way.endswith("ca .5") else f"/{f} Do")
+            d.cell(r, c, f"{bops} {box()}\n{top}", half=True)
+    return d
+
+
+# ── 16 overprint in transparency groups ──────────────────────────────────
+# 07-overprint's sources (OPM 1 K, C .5, a spot, DeviceN) inside a group,
+# per group kind, over a base on five inks: overprint composites in the
+# group (ISO 32000-2 11.7.4.3, CompatibleOverprint)
+OP_GROUPS = [("group", "/Group << /S /Transparency >>", ""), ("isolated", "/Group << /S /Transparency /I true >>", ""),
+             ("knockout", "/Group << /S /Transparency /K true >>", ""),
+             ("group ca .5", "/Group << /S /Transparency >>", "/A gs "),
+             ("group Multiply", "/Group << /S /Transparency >>", "/M gs "),
+             ("ca .5 inside", "/Group << /S /Transparency >>", "")]
+
+
+def overprint_groups():
+    d = Doc([], [g[0] for g in OP_GROUPS])
+    s021, s354 = d.spots()
+    sn = d.devicen()
+    cs = d.res["ColorSpace"]
+    op = d.gs("OP1", "<< /OP true /op true /OPM 1 >>")
+    opa = d.gs("OP1A", "<< /OP true /op true /OPM 1 /ca 0.5 >>")
+    a = d.gs("A", "<< /ca 0.5 >>")
+    m = d.gs("M", "<< /BM /Multiply >>")
+    sources = [("OPM1 k K", "0 0 0 1 k"), ("OPM1 k C.5", "0.5 0 0 0 k"), ("OP 354", "/S354 cs 1 scn"),
+               ("OP 021 same", "/S021 cs 1 scn"), ("OP DeviceN", "/SN cs 0 1 scn"), ("knockout k", None)]
+    d.rows = [s[0] for s in sources]
+    res = (f"<< /ExtGState << /OP {d.res['ExtGState'][op]} /OPA {d.res['ExtGState'][opa]} >>"
+           f" /ColorSpace << /S021 {cs[s021]} /S354 {cs[s354]} /SN {cs[sn]} >> >>")
+    base = f"0.3 0.3 0.3 0.3 k {box()}\nq /{op} gs /{s021} cs 0.5 scn {box()} Q"
+    for r, (label, ops) in enumerate(sources):
+        for c, (glabel, group, state) in enumerate(OP_GROUPS):
+            g = "/OPA gs" if glabel == "ca .5 inside" else "/OP gs"
+            inner = f"{g} {ops or '0 0 0 1 k'} {box(15, 0, 15)}" if ops else f"0 0 0 1 k {box(15, 0, 15)}"
+            f = d.add("XObject", f"O{r}_{c}", d.stream(
+                f"/Type /XObject /Subtype /Form /BBox [0 0 {CELL} {CELL}] /Resources {res} {group}", inner.encode()))
+            d.cell(r, c, f"{base}\nq {state.replace('/A ', f'/{a} ').replace('/M ', f'/{m} ')}/{f} Do Q", half=True)
+    return d
+
+
+# ── 17 spot discovery: spots only found inside other resources ──────────
+# each cell paints one spot that only a pattern, a shading, a Type3 glyph, a
+# nested form, an indexed image, an annotation's appearance or a DeviceN
+# names: the plates found (PDFKING_GetPageInks) must be gs's. gs does not
+# look in a Type3 font's own resources: it drops that glyph, and its spot
+def spot_discovery():
+    d = Doc(["found in"], ["tiling pattern", "shading", "Type3 glyph", "form in form", "indexed image",
+                           "annotation", "DeviceN"])
+
+    def sep(n, alt):
+        return d.obj(f"[/Separation {name(n)} /DeviceCMYK << /FunctionType 2 /Domain [0 1]"
+                     f" /C0 [0 0 0 0] /C1 [{alt}] /N 1 >>]")
+
+    form = lambda key, ops, res: d.add("XObject", key, d.stream(
+        f"/Type /XObject /Subtype /Form /BBox [0 0 {CELL} {CELL}] /Resources << {res} >>", ops.encode()))
+    tile = d.stream(f"/PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 10 10] /XStep 10 /YStep 10"
+                    f" /Resources << /ColorSpace << /T {sep('Spot Tile', '1 0 0 0')} >> >>",
+                    b"/T cs 1 scn 0 0 5 5 re f")
+    d.add("Pattern", "PT", tile)
+    sx, sy = d.xy(0, 1)  # pattern space is the page's: the cell's corner
+    d.add("Pattern", "PS", d.obj(f"<< /PatternType 2 /Matrix [1 0 0 1 {sx} {sy}]"
+                                 f" /Shading << /ShadingType 2 /ColorSpace {sep('Spot Shade', '0 1 0 0')}"
+                                 f" /Coords [0 0 {CELL} 0] /Function << /FunctionType 2 /Domain [0 1] /C0 [0] /C1 [1] /N 1 >> >> >>"))
+    glyph = d.stream("", b"0 0 d0 /G cs 1 scn 0 0 1000 1000 re f")
+    t3 = d.obj(f"<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] /FontMatrix [0.001 0 0 0.001 0 0]"
+               f" /CharProcs << /a {glyph} >> /Encoding << /Differences [97 /a] >> /FirstChar 97 /LastChar 97"
+               f" /Widths [1000] /Resources << /ColorSpace << /G {sep('Spot Glyph', '0 0 1 0')} >> >> >>")
+    d.add("Font", "T3", t3)
+    inner = form("In", "/F cs 1 scn 0 0 30 30 re f", f"/ColorSpace << /F {sep('Spot Form', '0 0 0 1')} >>")
+    outer = form("Out", "/Inner Do", f"/XObject << /Inner {d.res['XObject'][inner]} >>")
+    img = d.image("Idx", 2, 1, f"[/Indexed {sep('Spot Index', '1 1 0 0')} 1 <00ff>]", 8, bytes([1, 1]))
+    dn = d.add("ColorSpace", "DN", d.obj(
+        f"[/DeviceN [{name('Spot N1')} {name('Spot N2')} /Cyan] /DeviceCMYK"
+        f" {d.stream('/FunctionType 4 /Domain [0 1 0 1 0 1] /Range [0 1 0 1 0 1 0 1]', b'{add exch pop 0 0 0}', compress=False)}]"))
+    ops = ["/Pattern cs /PT scn " + box(), "/Pattern cs /PS scn " + box(), "BT /T3 30 Tf 0 0 Td (a) Tj ET",
+           f"/{outer} Do", f"30 0 0 30 0 0 cm /{img} Do", "", f"/{dn} cs 1 0.5 0 scn " + box()]
+    for c, op in enumerate(ops):
+        d.cell(0, c, op)
+    # an annotation, printed: its appearance's spot
+    x, y = d.xy(0, 5)
+    ap = d.stream(f"/Type /XObject /Subtype /Form /BBox [0 0 {CELL} {CELL}]"
+                  f" /Resources << /ColorSpace << /A {sep('Spot Annot', '1 0 1 0')} >> >>", b"/A cs 1 scn 0 0 30 30 re f")
+    d.annots = [f"<< /Type /Annot /Subtype /Square /F 4 /Rect [{x} {y} {x + CELL} {y + CELL}] /AP << /N {ap} >> >>"]
+    return d
+
+
 TESTS = [("00-sheet", sheet), ("01-tints", tints), ("02-blends", blends), ("03-rgb-gray-cie-vectors", rgb_vectors),
          ("04-images-process-gray", images_process), ("05-images-rgb", images_rgb), ("06-images-spot", images_spot),
-         ("07-overprint", overprint), ("08-shadings", shadings), ("09-groups-softmasks", groups), ("10-icc", icc), ("11-images", images), ("12-text", text), ("13-text-overprint", text_overprint), ("14-knockout", knockout)]
+         ("07-overprint", overprint), ("08-shadings", shadings), ("09-groups-softmasks", groups), ("10-icc", icc), ("11-images", images), ("12-text", text), ("13-text-overprint", text_overprint), ("14-knockout", knockout),
+         ("15-nonseparable", nonseparable), ("16-overprint-groups", overprint_groups),
+         ("17-spot-discovery", spot_discovery)]
 
 if __name__ == "__main__":
     out = sys.argv[1]

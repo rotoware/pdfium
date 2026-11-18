@@ -14,6 +14,7 @@
 #include "build/build_config.h"
 #include "constants/catalog.h"
 #include "core/fpdfapi/page/cpdf_docpagedata.h"
+#include "core/fpdfapi/page/cpdf_inks.h"
 #include "core/fpdfapi/page/cpdf_occontext.h"
 #include "core/fpdfapi/page/cpdf_page.h"
 #include "core/fpdfapi/page/cpdf_pageimagecache.h"
@@ -27,6 +28,7 @@
 #include "core/fpdfapi/parser/cpdf_string.h"
 #include "core/fpdfapi/parser/fpdf_parser_decode.h"
 #include "core/fpdfapi/render/cpdf_docrenderdata.h"
+#include "core/fpdfapi/render/cpdf_inkdriver.h"
 #include "core/fpdfapi/render/cpdf_pagerendercontext.h"
 #include "core/fpdfapi/render/cpdf_rendercontext.h"
 #include "core/fpdfapi/render/cpdf_renderoptions.h"
@@ -911,8 +913,128 @@ FPDF_EXPORT void FPDF_CALLCONV PDFKING_SetPlate(FPDF_DOCUMENT document,
                                                 FPDF_BYTESTRING plate) {
   CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
   if (doc) {
-    doc->SetPlate(plate ? ByteString(plate) : ByteString());
+    CPDF_DocPageData::FromDocument(doc)->SetPlate(
+        plate && *plate ? pdfium::MakeRetain<CPDF_Plate>(doc, plate) : nullptr);
   }
+}
+
+FPDF_EXPORT unsigned long FPDF_CALLCONV
+PDFKING_GetPageInks(FPDF_PAGE page, char* buffer, unsigned long length) {
+  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
+  if (!pPage) {
+    return 0;
+  }
+  ByteString names;
+  for (const ByteString& name : PageSpotInks(pPage)) {
+    names += name;
+    names += '\0';
+  }
+  const unsigned long size = names.GetLength();
+  if (buffer && length >= size) {
+    UNSAFE_TODO(FXSYS_memcpy(buffer, names.c_str(), size));
+  }
+  return size;
+}
+
+FPDF_EXPORT PDFKING_INKS FPDF_CALLCONV
+PDFKING_LoadInks(FPDF_PAGE page, const FPDF_BYTESTRING* names, int count) {
+  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
+  if (!pPage || !names || count <= 0) {
+    return nullptr;
+  }
+  std::vector<ByteString> inks_names;
+  for (FPDF_BYTESTRING name : UNSAFE_TODO(pdfium::span(names, static_cast<size_t>(count)))) {
+    if (!name) {
+      return nullptr;
+    }
+    inks_names.emplace_back(name);
+  }
+  return reinterpret_cast<PDFKING_INKS>(
+      pdfium::MakeRetain<CPDF_Inks>(pPage, inks_names).Leak());
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV PDFKING_RenderInks(PDFKING_INKS inks,
+                                                       FPDF_PAGE page,
+                                                       FPDF_BITMAP* planes,
+                                                       const FS_MATRIX* matrix,
+                                                       const FS_RECTF* clipping,
+                                                       int flags) {
+  CPDF_Inks* ink_set = reinterpret_cast<CPDF_Inks*>(inks);
+  CPDF_Page* pPage = CPDFPageFromFPDFPage(page);
+  if (!ink_set || !pPage || !planes) {
+    return false;
+  }
+  std::vector<std::unique_ptr<CFX_RenderDevice>> devices;
+  std::vector<CFX_RenderDevice*> plane_devices;
+  for (FPDF_BITMAP plane : UNSAFE_TODO(pdfium::span(planes, ink_set->asked()))) {
+    RetainPtr<CFX_DIBitmap> bitmap(CFXDIBitmapFromFPDFBitmap(plane));
+    if (!bitmap || bitmap->GetFormat() != FXDIB_Format::k8bppRgb ||
+        (!devices.empty() &&
+         (bitmap->GetWidth() != devices[0]->GetWidth() ||
+          bitmap->GetHeight() != devices[0]->GetHeight()))) {
+      return false;
+    }
+    devices.push_back(CFX_RenderDevice::CreateForBitmap(std::move(bitmap)));
+    if (!devices.back()) {
+      return false;
+    }
+    plane_devices.push_back(devices.back().get());
+  }
+  // the plates not asked for, rendered all the same (CPDF_Inks::size())
+  while (devices.size() < ink_set->size()) {
+    auto hidden = pdfium::MakeRetain<CFX_DIBitmap>();
+    if (devices.empty() ||
+        !hidden->Create(devices[0]->GetWidth(), devices[0]->GetHeight(),
+                        FXDIB_Format::k8bppRgb)) {
+      return false;
+    }
+    hidden->Clear(0xFFFFFFFF);
+    devices.push_back(CFX_RenderDevice::CreateForBitmap(std::move(hidden)));
+    plane_devices.push_back(devices.back().get());
+  }
+  RetainPtr<CPDF_Inks> retained(ink_set);
+  std::unique_ptr<CFX_RenderDevice> device = CFX_RenderDevice::CreateWithDriver(
+      std::make_unique<CPDF_InkDriver>(retained, plane_devices));
+  if (!device) {
+    return false;
+  }
+  ink_set->SetDevices(device.get(), plane_devices);
+  ink_set->ClearFailed();
+
+  CPDF_Document* doc = pPage->GetDocument();
+  CPDF_DocPageData* data = CPDF_DocPageData::FromDocument(doc);
+  RetainPtr<const CPDF_Plate> plate(data->GetPlate());
+  data->SetPlate(nullptr);
+  data->SetInks(retained);
+  {
+    auto owned_context = std::make_unique<CPDF_PageRenderContext>();
+    CPDF_PageRenderContext* context = owned_context.get();
+    CPDF_Page::RenderContextClearer clearer(pPage);
+    pPage->SetRenderContext(std::move(owned_context));
+    context->device_ = std::move(device);
+
+    CFX_FloatRect clipping_rect;
+    if (clipping) {
+      clipping_rect = CFXFloatRectFromFSRectF(*clipping);
+    }
+    CFX_Matrix transform_matrix = pPage->GetDisplayMatrix();
+    if (matrix) {
+      transform_matrix *= CFXMatrixFromFSMatrix(*matrix);
+    }
+    CPDFSDK_RenderPage(context, pPage, transform_matrix,
+                       clipping_rect.ToFxRect(), flags,
+                       /*color_scheme=*/nullptr);
+  }
+  data->SetInks(nullptr);
+  data->SetPlate(std::move(plate));
+  ink_set->SetDevices(nullptr, {});
+  return !ink_set->failed();
+}
+
+FPDF_EXPORT void FPDF_CALLCONV PDFKING_CloseInks(PDFKING_INKS inks) {
+  // Take it back across the API and throw it away
+  RetainPtr<CPDF_Inks> owned;
+  owned.Unleak(reinterpret_cast<CPDF_Inks*>(inks));
 }
 
 FPDF_EXPORT void FPDF_CALLCONV FPDF_CloseDocument(FPDF_DOCUMENT document) {

@@ -31,6 +31,8 @@ class CPDF_GeneralState {
   bool HasRef() const { return !!ref_; }
 
   void SetRenderIntent(const ByteString& ri);
+  // pdfking: 0 RelativeColorimetric, 1 Absolute, 2 Saturation, 3 Perceptual
+  int GetRenderIntent() const;
 
   ByteString GetBlendMode() const;
   BlendMode GetBlendType() const;

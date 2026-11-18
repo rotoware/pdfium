@@ -20,6 +20,7 @@
 #include "core/fpdfapi/page/cpdf_imageobject.h"
 #include "core/fpdfapi/page/cpdf_occontext.h"
 #include "core/fpdfapi/page/cpdf_page.h"
+#include "core/fpdfapi/page/cpdf_inks.h"
 #include "core/fpdfapi/page/cpdf_pageimagecache.h"
 #include "core/fpdfapi/page/cpdf_pageobject.h"
 #include "core/fpdfapi/page/cpdf_shadingpattern.h"
@@ -71,7 +72,10 @@ bool CPDF_ImageRenderer::StartLoadDIBBase() {
   }
 
   if (!loader_->Start(
-          image_object_, render_status_->GetContext()->GetPageCache(),
+          image_object_,
+          SeparationImageCache(  // pdfking: on inks, the plate's
+              render_status_->GetContext()->GetDocument(),
+              render_status_->GetContext()->GetPageCache()),
           render_status_->GetFormResource(), render_status_->GetPageResource(),
           render_status_->GetGroupFamily(), render_status_->GetLoadMask(),
           {render_status_->GetRenderDevice()->GetWidth(),

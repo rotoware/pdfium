@@ -13,6 +13,8 @@
 
 #include "core/fpdfapi/font/cpdf_font.h"
 #include "core/fpdfapi/page/cpdf_colorspace.h"
+#include "core/fpdfapi/page/cpdf_inks.h"
+#include "core/fpdfapi/page/cpdf_plate.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fxcrt/bytestring.h"
 #include "core/fxcrt/data_vector.h"
@@ -87,6 +89,14 @@ class CPDF_DocPageData final : public CPDF_Document::PageDataIface,
   RetainPtr<CPDF_IccProfile> GetIccProfile(
       RetainPtr<const CPDF_Stream> pProfileStream);
 
+  // pdfking: the plate pages render as, null for color. Set before a page
+  // is first rendered: images are cached as converted.
+  void SetPlate(RetainPtr<const CPDF_Plate> plate) { plate_ = std::move(plate); }
+  const CPDF_Plate* GetPlate() const { return plate_.Get(); }
+  // pdfking: the inks pages render to at once, null for color
+  void SetInks(RetainPtr<CPDF_Inks> inks) { inks_ = std::move(inks); }
+  CPDF_Inks* GetInks() const { return inks_.Get(); }
+
  private:
   struct HashIccProfileKey {
     HashIccProfileKey(DataVector<uint8_t> digest, uint32_t components);
@@ -118,6 +128,8 @@ class CPDF_DocPageData final : public CPDF_Document::PageDataIface,
       std::function<void(wchar_t, wchar_t, CPDF_Array*)> Insert);
 
   bool force_clear_ = false;
+  RetainPtr<const CPDF_Plate> plate_;  // pdfking
+  RetainPtr<CPDF_Inks> inks_;          // pdfking
 
   // Specific destruction order may be required between maps.
   std::map<HashIccProfileKey, RetainPtr<const CPDF_Stream>>

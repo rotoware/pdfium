@@ -77,6 +77,8 @@ source_set("page") {
     "cpdf_pattern.h",
     "cpdf_patterncs.cpp",
     "cpdf_patterncs.h",
+    "cpdf_inks.cpp",
+    "cpdf_inks.h",
     "cpdf_plate.cpp",
     "cpdf_plate.h",
     "cpdf_psengine.cpp",
