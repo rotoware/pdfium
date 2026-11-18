@@ -14,10 +14,10 @@ class CPDF_ColorSpace;
 // Whether `plate` is a spot's, not one of the four process plates.
 bool PlateIsSpot(const ByteString& plate);
 
-// Whether anything painted in `cs` can put ink on `plate` (Cyan, Magenta,
-// Yellow, Black or a spot's name): a Separation or DeviceN only its own
-// colorants, CMYK the four process plates, gray Black alone, RGB and the CIE
-// spaces Cyan, Magenta and Yellow.
+// Whether anything painted in `cs` paints `plate` (Cyan, Magenta, Yellow,
+// Black or a spot's name), its ink or none: a Separation or DeviceN only its
+// own colorants, any process space (CMYK, gray, RGB, the CIE spaces) all four
+// process plates, as gs separates them under overprint.
 bool PlateMarked(const CPDF_ColorSpace* cs, const ByteString& plate);
 
 // The ink `comps` in `cs` put on `plate`, 0 to 1: process colors as they

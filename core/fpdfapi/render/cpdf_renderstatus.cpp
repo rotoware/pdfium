@@ -79,6 +79,22 @@
 
 namespace {
 
+// pdfking: whether an overprinting image is in inks all off the document's
+// plate, which it then leaves as it was
+bool PlateLeavesImage(CPDF_Document* doc, CPDF_ImageObject* image) {
+  const ByteString& plate = doc->GetPlate();
+  if (plate.IsEmpty() || !image->general_state().GetFillOP()) {
+    return false;
+  }
+  RetainPtr<const CPDF_Object> cs_obj =
+      image->GetImage()->GetDict()->GetDirectObjectFor("ColorSpace");
+  RetainPtr<CPDF_ColorSpace> cs =
+      cs_obj ? CPDF_DocPageData::FromDocument(doc)->GetColorSpace(cs_obj.Get(),
+                                                                  nullptr)
+             : nullptr;
+  return cs && !PlateMarked(cs.Get(), plate);
+}
+
 constexpr int kRenderMaxRecursionDepth = 64;
 int g_CurrentRecursionDepth = 0;
 
@@ -281,6 +297,10 @@ bool CPDF_RenderStatus::ContinueSingleObject(CPDF_PageObject* pObj,
 
   if (!pObj->IsImage()) {
     ProcessObjectNoClip(pObj, mtObj2Device);
+    return false;
+  }
+
+  if (PlateLeavesImage(context_->GetDocument(), pObj->AsImage())) {
     return false;
   }
 
@@ -1339,18 +1359,8 @@ void CPDF_RenderStatus::ProcessPathPattern(
 
 bool CPDF_RenderStatus::ProcessImage(CPDF_ImageObject* pImageObj,
                                      const CFX_Matrix& mtObj2Device) {
-  // pdfking: an overprinting image in inks off the plate leaves it as it was
-  const ByteString& plate = context_->GetDocument()->GetPlate();
-  if (!plate.IsEmpty() && pImageObj->general_state().GetFillOP()) {
-    RetainPtr<const CPDF_Object> cs_obj =
-        pImageObj->GetImage()->GetDict()->GetDirectObjectFor("ColorSpace");
-    RetainPtr<CPDF_ColorSpace> cs =
-        cs_obj ? CPDF_DocPageData::FromDocument(context_->GetDocument())
-                     ->GetColorSpace(cs_obj.Get(), nullptr)
-               : nullptr;
-    if (cs && !PlateMarked(cs.Get(), plate)) {
-      return true;
-    }
+  if (PlateLeavesImage(context_->GetDocument(), pImageObj)) {
+    return true;
   }
   CPDF_ImageRenderer render(this);
   if (render.Start(pImageObj, mtObj2Device)) {
@@ -1545,8 +1555,14 @@ RetainPtr<CFX_DIBitmap> CPDF_RenderStatus::LoadSMask(
   status.SetLoadMask(bLuminosity);
   status.SetFormResource(std::move(pFormResource));
   status.SetDropObjects(drop_objects_);
+  // pdfking: a soft mask is measured in its colors, never as the plate: off
+  // while it renders
+  CPDF_Document* doc = context_->GetDocument();
+  const ByteString plate = doc->GetPlate();
+  doc->SetPlate(ByteString());
   status.Initialize(nullptr, nullptr);
   status.RenderObjectList(&form, matrix);
+  doc->SetPlate(plate);
 
   auto result_mask = pdfium::MakeRetain<CFX_DIBitmap>();
   if (!result_mask->Create(width, height, FXDIB_Format::k8bppMask)) {

@@ -121,9 +121,11 @@ class CPDF_PlateCS final : public CPDF_ColorSpace {
 
  private:
   // DeviceN: no image or shading fast path treats it as anything but its
-  // components through this space
+  // components through this space; Indexed over an indexed base, whose
+  // images are read as raw indices by that family
   CPDF_PlateCS(RetainPtr<CPDF_ColorSpace> base, const ByteString& plate)
-      : CPDF_ColorSpace(Family::kDeviceN),
+      : CPDF_ColorSpace(base->AsIndexedCS() ? Family::kIndexed
+                                             : Family::kDeviceN),
         base_(std::move(base)),
         plate_(plate) {
     SetComponentsForStockCS(base_->ComponentCount());
@@ -169,13 +171,8 @@ bool PlateMarked(const CPDF_ColorSpace* cs, const ByteString& plate) {
     case Family::kPattern:
       return true;
     default:
-      if (IsCmyk(cs)) {
-        return index >= 0;
-      }
-      if (IsGray(cs)) {
-        return index == 3;
-      }
-      return index >= 0 && index < 3;
+      // every process space paints all four process plates, its ink or none
+      return index >= 0;
   }
 }
 
@@ -235,6 +232,11 @@ std::optional<float> PlateInk(const CPDF_ColorSpace* cs,
   }
   if (index < 0 || index == 3) {
     return 0.0f;
+  }
+  // CalRGB as plain RGB, as gs -dUseFastColor takes it: its gamma and matrix
+  // only say what the values look like, never what goes on the plate
+  if (family == Family::kCalRGB && comps.size() >= 3) {
+    return 1.0f - Clamp(comps[index]);
   }
   auto rgb = cs->GetRGBOrZerosOnError(comps);
   const float channel = index == 0 ? rgb.red : index == 1 ? rgb.green : rgb.blue;
