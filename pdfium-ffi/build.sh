@@ -23,7 +23,7 @@ pack() { # <rust target> <libpdfium.a>
 # emscripten is a secondary toolchain (//:pdfium_wasm); EMCC_CFLAGS reaches
 # every compile: wasm SjLj, as rustc's emscripten targets link
 wasm() { # <rust target> <emcc flags>
-  gn gen "out/$1" --args="$ARGS use_system_xcode=true emscripten_path=\"$(dirname "$(command -v emcc)")\""
+  gn gen "out/$1" --args="$ARGS use_glib=false use_system_xcode=true emscripten_path=\"$(dirname "$(command -v emcc)")\""
   EMCC_CFLAGS="$2" ninja -C "out/$1" pdfium_wasm
   pack "$1" "out/$1/wasm/obj/libpdfium.a"
 }
