@@ -14,7 +14,7 @@ jobs:
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           sparse-checkout: pdfium-ffi/Cargo.toml
       # a release is never replaced: bump the version first
@@ -46,7 +46,7 @@ jobs:
           echo "$PWD/depot_tools" >> "$GITHUB_PATH"
       # the version wasm consumers link with
       - if: runner.os == 'Linux'
-        uses: mymindstorm/setup-emsdk@v16
+        uses: mymindstorm/setup-emsdk@4528d102f7230f0e7b276855c01ea1159be0e984 # v16
         with:
           version: 7.0.0
       - name: gclient sync
@@ -64,7 +64,7 @@ jobs:
           EOF
           gclient sync --revision "pdfium@$GITHUB_SHA" --no-history --shallow
       - run: pdfium/pdfium-ffi/build.sh ${{ matrix.targets }}
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ runner.os }}
           path: pdfium/out/release/*.tar.gz
@@ -76,7 +76,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           merge-multiple: true
       - run: |
