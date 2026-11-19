@@ -36,16 +36,6 @@
 #include <set>
 #include <vector>
 
-#ifdef __EMSCRIPTEN__
-#include <unistd.h>
-
-// abseil's raw logging writes through emscripten_errn, a JS import otherwise:
-// to stderr instead, libpdfium.a needs no JS beyond libc's
-extern "C" void emscripten_errn(const char* text, size_t len) {
-  write(2, text, len);
-}
-#endif
-
 #ifdef __cplusplus
 extern "C"
 {
