@@ -1,0 +1,88 @@
+# pdfium-ffi's libpdfium.a per target (pdfium-ffi/build.sh). A push to
+# `release` publishes them as the release pdfium-ffi-v<Cargo.toml version>,
+# the assets pdfium-ffi's build.rs downloads; run by hand it only builds.
+name: release
+
+on:
+  push:
+    branches: [release]
+  workflow_dispatch:
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: pdfium-ffi/Cargo.toml
+      # a release is never replaced: bump the version first
+      - id: tag
+        run: |
+          tag="pdfium-ffi-v$(sed -n 's/^version = "\(.*\)"$/\1/p' pdfium-ffi/Cargo.toml)"
+          if [ "$GITHUB_EVENT_NAME" = push ] && gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::$tag exists, bump pdfium-ffi/Cargo.toml" && exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  build:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            targets: wasm32-unknown-emscripten wasm64-unknown-emscripten
+          - runner: macos-latest
+            targets: aarch64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: depot_tools
+        run: |
+          git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git
+          echo "$PWD/depot_tools" >> "$GITHUB_PATH"
+      # the version wasm consumers link with
+      - if: runner.os == 'Linux'
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 7.0.0
+      - name: gclient sync
+        run: |
+          cat > .gclient <<EOF
+          solutions = [
+            { "name": "pdfium",
+              "url": "https://github.com/$GITHUB_REPOSITORY.git",
+              "deps_file": "DEPS",
+              "managed": False,
+              "custom_deps": {},
+              "custom_vars": {},
+            },
+          ]
+          EOF
+          gclient sync --revision "pdfium@$GITHUB_SHA" --no-history --shallow
+      - run: pdfium/pdfium-ffi/build.sh ${{ matrix.targets }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ runner.os }}
+          path: pdfium/out/release/*.tar.gz
+
+  release:
+    if: github.event_name == 'push'
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - run: |
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "$TAG" --notes "libpdfium.a per target for pdfium-ffi; wasm built with emsdk 7.0.0" \
+            *.tar.gz
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
