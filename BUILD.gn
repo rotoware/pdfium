@@ -238,6 +238,9 @@ component("pdfium") {
   configs += [ ":pdfium_strict_config" ]
   public_configs = [ ":pdfium_public_config" ]
 
+  # pdfking: the PDFKING_* primitives pdfium-ffi declares
+  sources = [ "pdfium-ffi/glue/pdfking.cpp" ]
+
   deps = [
     "constants",
     "core/fpdfapi/page",
@@ -295,6 +298,12 @@ if (pdf_enable_freetype) {
       public_deps += [ "//build/config/freetype" ]
     }
   }
+}
+
+# pdfking: libpdfium.a for emscripten (wasm/obj/libpdfium.a), from any host.
+# Emscripten is only a secondary toolchain upstream; memory64 is EMCC_CFLAGS.
+group("pdfium_wasm") {
+  deps = [ ":pdfium(//build/toolchain/wasm:wasm)" ]
 }
 
 # Targets below this are only visible within this file.
