@@ -15,6 +15,7 @@
 #include <utility>
 
 #include "constants/page_object.h"
+#include "core/fpdfapi/edit/cpdf_pagecontentgenerator_pdfking.h"  // pdfking
 #include "core/fpdfapi/edit/cpdf_pagecontentmanager.h"
 #include "core/fpdfapi/edit/cpdf_stringarchivestream.h"
 #include "core/fpdfapi/font/cpdf_truetypefont.h"
@@ -817,10 +818,14 @@ void CPDF_PageContentGenerator::ProcessPath(fxcrt::ostringstream* buf,
 void CPDF_PageContentGenerator::ProcessGraphics(fxcrt::ostringstream* buf,
                                                 CPDF_PageObject* pPageObj) {
   *buf << "q ";
-  if (WriteColorToStream(*buf, pPageObj->color_state().GetFillColor())) {
+  if (!pdfking::WriteColorInItsSpace(  // pdfking
+          *buf, pPageObj->color_state().GetFillColor(), /*stroke=*/false) &&
+      WriteColorToStream(*buf, pPageObj->color_state().GetFillColor())) {
     *buf << " rg ";
   }
-  if (WriteColorToStream(*buf, pPageObj->color_state().GetStrokeColor())) {
+  if (!pdfking::WriteColorInItsSpace(  // pdfking
+          *buf, pPageObj->color_state().GetStrokeColor(), /*stroke=*/true) &&
+      WriteColorToStream(*buf, pPageObj->color_state().GetStrokeColor())) {
     *buf << " RG ";
   }
   float line_width = pPageObj->graph_state().GetLineWidth();
@@ -907,7 +912,8 @@ void CPDF_PageContentGenerator::ProcessGraphics(fxcrt::ostringstream* buf,
 
 void CPDF_PageContentGenerator::ProcessDefaultGraphics(
     fxcrt::ostringstream* buf) {
-  *buf << "0 0 0 RG 0 0 0 rg 1 w "
+  // pdfking: the initial color, as the spec has it: black in DeviceGray
+  *buf << "0 G 0 g 1 w "
        << static_cast<int>(CFX_GraphStateData::LineCap::kButt) << " J "
        << static_cast<int>(CFX_GraphStateData::LineJoin::kMiter) << " j\n";
   default_graphics_name_ = GetOrCreateDefaultGraphics();

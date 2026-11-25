@@ -202,10 +202,7 @@ bool CPDF_Creator::WriteOldObjs() {
 
 bool CPDF_Creator::WriteNewObjs() {
   std::map<uint32_t, RetainPtr<const CPDF_Object>> font_obj_overrides;
-  if (subset_new_fonts_) {
-    CPDF_FontSubsetter subsetter(document_);
-    font_obj_overrides = subsetter.GenerateObjectOverrides(new_obj_num_array_);
-  }
+  /* pdfking: no font subsetting, harfbuzz is not linked */
   for (size_t i = cur_obj_num_; i < new_obj_num_array_.size(); ++i) {
     uint32_t objnum = new_obj_num_array_[i];
     RetainPtr<const CPDF_Object> obj = document_->GetIndirectObject(objnum);
@@ -646,7 +643,7 @@ void CPDF_Creator::InitID() {
     id_array_->Append(pID1->Clone());
   } else {
     std::array<uint32_t, 4> file_id;
-    FX_Random::Fill(file_id);
+    file_id.fill(last_obj_num_);
     id_array_->AppendNew<CPDF_String>(pdfium::as_byte_span(file_id),
                                       CPDF_String::DataType::kIsHex);
   }
@@ -658,7 +655,7 @@ void CPDF_Creator::InitID() {
       return;
     }
     std::array<uint32_t, 4> file_id;
-    FX_Random::Fill(file_id);
+    file_id.fill(last_obj_num_);
     id_array_->AppendNew<CPDF_String>(pdfium::as_byte_span(file_id),
                                       CPDF_String::DataType::kIsHex);
     return;

@@ -233,6 +233,9 @@ component("pdfium") {
   configs += [ ":pdfium_strict_config" ]
   public_configs = [ ":pdfium_public_config" ]
 
+  # pdfking: the PDFKING_* primitives pdfium-ffi declares
+  sources = [ "pdfium-ffi/glue/pdfking.cpp" ]
+
   deps = [
     "constants",
     "core/fpdfapi/page",
@@ -244,6 +247,10 @@ component("pdfium") {
     "fpdfsdk",
     "fpdfsdk/formfiller",
     "fxjs",
+
+    # pdfking: the PDFKING_* primitives pdfium-ffi declares
+    "core/fpdfapi/edit",
+    "third_party:zlib",
   ]
 
   public_deps = [
@@ -290,6 +297,12 @@ if (pdf_enable_freetype) {
       public_deps += [ "//build/config/freetype" ]
     }
   }
+}
+
+# pdfking: libpdfium.a for emscripten (wasm/obj/libpdfium.a), from any host.
+# Emscripten is only a secondary toolchain upstream; memory64 is EMCC_CFLAGS.
+group("pdfium_wasm") {
+  deps = [ ":pdfium(//build/toolchain/wasm:wasm)" ]
 }
 
 # Targets below this are only visible within this file.
@@ -455,7 +468,7 @@ group("gn_check") {
 
   # TODO(crbug.com/pdfium/1832): Remove !is_android when //third_party/expat is
   # available.
-  if (defined(checkout_skia) && checkout_skia && !is_android) {
+  if (defined(checkout_skia) && checkout_skia && !is_android && !is_wasm) {
     deps += [ "//skia" ]
   }
 }

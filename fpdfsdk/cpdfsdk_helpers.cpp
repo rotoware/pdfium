@@ -444,7 +444,7 @@ void ReportUnsupportedFeatures(const CPDF_Document* doc) {
   }
 
   // SharedForm
-  RetainPtr<const CPDF_Stream> pStream = pRootDict->GetStreamFor("Metadata");
+  RetainPtr<const CPDF_Stream> pStream = nullptr /* pdfking: the XMP is never parsed on open */;
   if (pStream) {
     CPDF_Metadata metadata(std::move(pStream));
     for (const UnsupportedFeature& feature : metadata.CheckForSharedForm()) {

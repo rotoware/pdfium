@@ -93,7 +93,8 @@ bool CPDF_PageOrganizer::UpdateReference(RetainPtr<CPDF_Object> obj) {
         CPDF_DictionaryLocker locker(dict);
         for (const auto& it : locker) {
           const ByteString& key = it.first;
-          if (key == "Parent" || key == "Prev" || key == "First") {
+          if (key == "Prev" || key == "First" ||
+              (key == "Parent" && dict->GetNameFor("Subtype") != "Popup")) {
             continue;
           }
           RetainPtr<CPDF_Object> next_obj = it.second;

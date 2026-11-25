@@ -481,6 +481,11 @@ source_set("fx_libopenjpeg") {
   ]
   public_configs = [ ":fx_libopenjpeg_config" ]
   deps = [ "../core/fxcrt" ]
+
+  # pdfking: emscripten's stdio declares fseeko/ftello only for POSIX
+  if (is_wasm) {
+    defines = [ "_POSIX_C_SOURCE=200112" ]
+  }
 }
 
 if (!pdf_enable_rust_png) {
