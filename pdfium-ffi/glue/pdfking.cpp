@@ -27,6 +27,8 @@
 #include "core/fpdfapi/page/cpdf_docpagedata.h"
 #include "core/fpdfapi/page/cpdf_occontext.h"
 #include "core/fpdfapi/page/cpdf_pageobject.h"
+#include "core/fpdfapi/page/cpdf_form.h"
+#include "core/fpdfapi/page/cpdf_formobject.h"
 #include "core/fpdfapi/page/cpdf_page.h"
 #include "core/fpdfapi/page/cpdf_clippath.h"
 #include "core/fpdfapi/page/cpdf_path.h"
@@ -81,6 +83,7 @@ extern "C"
     void PDFKING_PageObj_SetLayer(FPDF_PAGE page, FPDF_PAGEOBJECT obj, uint32_t objnum);
     int PDFKING_Doc_ExportShared(void* dest, void* src, uint32_t* intents, uint32_t* metadata);
     FPDF_PAGE PDFKING_Page_LoadUnparsed(FPDF_DOCUMENT doc, int page_index);
+    FPDF_PAGEOBJECT PDFKING_FormObj_FromXObject(FPDF_XOBJECT xobject);
 
     // --- Object primitives ---
     typedef int (*PDFKING_EntryFn)(const uint8_t* key, uint32_t size, void* value, void* ctx);
@@ -818,4 +821,16 @@ FPDF_PAGE PDFKING_Page_LoadUnparsed(FPDF_DOCUMENT document, int page_index) {
     auto page = pdfium::MakeRetain<CPDF_Page>(doc, std::move(dict));
     page->AddPageImageCache();
     return FPDFPageFromIPDFPage(page.Leak());
+}
+
+// FPDF_NewFormObjectFromXObject without parsing the form's content: a form
+// placed to be written only needs its stream (see ProcessForm), and a page
+// read back parses it then. Its box is empty until it is.
+FPDF_PAGEOBJECT PDFKING_FormObj_FromXObject(FPDF_XOBJECT xobject) {
+    XObjectContext* xobj = XObjectContextFromFPDFXObject(xobject);
+    if (!xobj) return nullptr;
+    auto form = std::make_unique<CPDF_Form>(xobj->dest_doc, nullptr, xobj->xobject, nullptr);
+    auto form_object = std::make_unique<CPDF_FormObject>(
+        CPDF_PageObject::kNoContentStream, std::move(form), CFX_Matrix());
+    return FPDFPageObjectFromCPDFPageObject(form_object.release());
 }

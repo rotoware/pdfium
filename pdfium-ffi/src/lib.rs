@@ -346,6 +346,7 @@ mod raw {
             metadata: *mut c_uint,
         ) -> c_int;
         pub fn PDFKING_Page_LoadUnparsed(document: FPDF_DOCUMENT, page_index: c_int) -> FPDF_PAGE;
+        pub fn PDFKING_FormObj_FromXObject(xobject: FPDF_XOBJECT) -> FPDF_PAGEOBJECT;
         // object primitives
         pub fn PDFKING_Object_Kind(obj: *mut c_void) -> c_int;
         pub fn PDFKING_Object_Direct(obj: *mut c_void) -> *mut c_void;
@@ -500,6 +501,17 @@ pub fn FPDF_LoadPage(doc: FPDF_DOCUMENT, index: i32) -> Result<FPDF_PAGE, String
         last_error("load page")
     } else {
         Ok(page)
+    }
+}
+
+/// A form object placed by its stream alone: its content not parsed, its
+/// box empty until a page read back parses it.
+pub fn PDFKING_FormObj_FromXObject(xobject: FPDF_XOBJECT) -> Result<FPDF_PAGEOBJECT, String> {
+    let obj = unsafe { raw::PDFKING_FormObj_FromXObject(xobject) };
+    if obj.is_null() {
+        last_error("create form object")
+    } else {
+        Ok(obj)
     }
 }
 
