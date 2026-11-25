@@ -6,6 +6,7 @@
 
 #include <stdint.h>
 
+#include <array>
 #include <map>
 #include <memory>
 #include <optional>
@@ -13,11 +14,15 @@
 
 #include "core/fpdfapi/page/cpdf_plate.h"
 #include "core/fxcrt/bytestring.h"
+#include "core/fxcrt/data_vector.h"
+#include "core/fxcrt/fx_coordinates.h"
 #include "core/fxcrt/retain_ptr.h"
 #include "core/fxcrt/unowned_ptr.h"
 #include "core/fxge/dib/fx_dib.h"
 
+class CFX_DIBitmap;
 class CFX_RenderDevice;
+class CPDF_Dictionary;
 class CPDF_Color;
 class CPDF_Document;
 class CPDF_GeneralState;
@@ -64,6 +69,41 @@ class CPDF_Inks final : public Retainable {
   // the plate. Nothing for a value that is not a handle of this render.
   std::optional<FX_ARGB> Resolve(FX_ARGB handle, size_t i) const;
 
+  // Whether the page group blends in RGB (gs pushes it: the page's
+  // resources have transparency): the process plates asked are then
+  // derived, painted by ConvertBlendSpace() from the blend channel plates
+  bool blends_in_rgb() const { return !!blend_; }
+
+  // The process planes asked, from the blend channels' (R, G, B) through
+  // the blend profiles, as gs converts its page group to the device
+  void ConvertBlendSpace() const;
+
+  // The render's device resolution, as gs's -r: glyphs are sized from it
+  float dpi() const { return dpi_; }
+  // Whether gs takes the page as having transparency (its pdf14 device)
+  bool page_transparent() const { return page_transparent_; }
+  void set_dpi(float dpi) { dpi_ = dpi; }
+  // Where the page's top left is on the device (a band offsets it)
+  const CFX_PointF& page_origin() const { return page_origin_; }
+  void set_page_origin(const CFX_PointF& origin) { page_origin_ = origin; }
+
+  // Whether an isolated group `form` blends in RGB and the inks can do as
+  // gs: render it on the blend channels (SwapChannels), then ConvertGroup
+  bool GroupBlendsInRgb(const CPDF_Dictionary* form) const;
+  // The process plates swapped with blend channel plates (R, G, B, a white
+  // K), or back, image caches with them
+  void SwapChannels();
+  // A group's planes, BGRA, rendered on the blend channels, to CMYK in
+  // place, alpha kept, through its profile (`form`'s group's) as gs
+  // converts a group's color space to its parent's
+  void ConvertGroup(const CPDF_Dictionary* form,
+                    const std::vector<RetainPtr<CFX_DIBitmap>>& bitmaps);
+  // The same for an isolated group blending in DeviceGray: rendered on a
+  // gray channel (SwapGrayChannels), then to CMYK (ConvertGrayGroup)
+  bool GroupBlendsInGray(const CPDF_Dictionary* form) const;
+  void SwapGrayChannels();
+  void ConvertGrayGroup(const std::vector<RetainPtr<CFX_DIBitmap>>& bitmaps);
+
   // The page's images as decoded for `plate`, kept across renders
   CPDF_PageImageCache* ImageCache(const CPDF_Plate* plate) const;
 
@@ -77,8 +117,13 @@ class CPDF_Inks final : public Retainable {
   CPDF_Inks(CPDF_Page* page, const std::vector<ByteString>& names);
   ~CPDF_Inks() override;
 
+  void InitBlend(CPDF_Page* page,
+                 const std::vector<ByteString>& names,
+                 const DataVector<uint8_t>& group_profile);
+
   std::vector<RetainPtr<const CPDF_Plate>> plates_;
   size_t asked_ = 0;
+  UnownedPtr<const CPDF_Document> page_doc_;
   std::vector<std::unique_ptr<CPDF_PageImageCache>> image_caches_;
   UnownedPtr<CFX_RenderDevice> device_;
   std::vector<UnownedPtr<CFX_RenderDevice>> planes_;
@@ -86,6 +131,24 @@ class CPDF_Inks final : public Retainable {
   std::vector<std::vector<FX_ARGB>> colors_;
   std::map<std::vector<FX_ARGB>, uint32_t> indices_;
   bool failed_ = false;
+  CFX_PointF page_origin_;
+  float dpi_ = 0;
+  bool page_transparent_ = false;
+  // an RGB page group's conversion to the plates, null for none
+  struct Blend;
+  std::unique_ptr<Blend> blend_;
+  // RGB form groups: the blend channel plates and their image caches (in
+  // plates_ while swapped), the process plates' indices, the transforms
+  // per group profile (null: the default RGB one)
+  std::vector<RetainPtr<const CPDF_Plate>> channel_plates_;
+  std::vector<std::unique_ptr<CPDF_PageImageCache>> channel_caches_;
+  // gray form groups: the gray channel and three white ones, the same way,
+  // and the gray to CMYK link
+  std::vector<RetainPtr<const CPDF_Plate>> gray_plates_;
+  std::vector<std::unique_ptr<CPDF_PageImageCache>> gray_caches_;
+  std::unique_ptr<Blend> gray_link_;
+  std::array<size_t, 4> process_ = {};
+  std::map<const void*, std::unique_ptr<Blend>> group_blends_;
 };
 
 // Whether an object of `holder` (or of a form in it) blends nonseparably
@@ -101,6 +164,11 @@ std::vector<ByteString> PageSpotInks(const CPDF_Page* page);
 
 // The inks `doc` renders to, null when it does not.
 CPDF_Inks* GetInks(const CPDF_Document* doc);
+
+// The inks of `doc`'s ink render, also in a color render inside it
+// (ScopedColorRender: a soft mask, a shape): what is rasterized as gs does.
+// Null outside an ink render.
+CPDF_Inks* GetGsInks(const CPDF_Document* doc);
 
 // The image cache a render of `doc` uses: on inks the plate's (none off a
 // plate), else `page_cache`.
@@ -118,6 +186,7 @@ class ScopedColorRender {
   UnownedPtr<const CPDF_Document> doc_;
   RetainPtr<const CPDF_Plate> plate_;
   RetainPtr<CPDF_Inks> inks_;
+  RetainPtr<CPDF_Inks> color_render_inks_;
 };
 
 #endif  // CORE_FPDFAPI_PAGE_CPDF_INKS_H_

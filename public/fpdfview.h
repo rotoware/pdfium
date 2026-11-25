@@ -58,7 +58,6 @@ typedef struct fpdf_annotation_t__* FPDF_ANNOTATION;
 typedef struct fpdf_attachment_t__* FPDF_ATTACHMENT;
 typedef struct fpdf_avail_t__* FPDF_AVAIL;
 typedef struct fpdf_bitmap_t__* FPDF_BITMAP;
-typedef struct pdfking_inks_t__* PDFKING_INKS;  // pdfking
 typedef struct fpdf_bookmark_t__* FPDF_BOOKMARK;
 typedef struct fpdf_clippath_t__* FPDF_CLIPPATH;
 typedef struct fpdf_dest_t__* FPDF_DEST;
@@ -991,45 +990,6 @@ FPDF_EXPORT void FPDF_CALLCONV FPDF_ClosePage(FPDF_PAGE page);
 // Return value:
 //          None.
 FPDF_EXPORT void FPDF_CALLCONV FPDF_CloseDocument(FPDF_DOCUMENT document);
-
-// pdfking: render `document`'s pages as the press plate `plate` (Cyan,
-// Magenta, Yellow, Black or a spot's name), gray from white (no ink) to
-// black (full ink), overprint honored; NULL or "" to render in color. Set
-// before any page is rendered.
-FPDF_EXPORT void FPDF_CALLCONV PDFKING_SetPlate(FPDF_DOCUMENT document,
-                                                FPDF_BYTESTRING plate);
-
-// pdfking: the spot inks `page` paints, as gs finds them: the colorants of
-// the Separation and DeviceN spaces its resources (and forms', patterns',
-// shadings', images', Type3 fonts', annotation appearances') name, but the
-// process inks, All and None, in the order found. Each name ends in a NUL,
-// written to `buffer` if `length` holds them all. Returns the bytes they
-// take, 0 for none.
-FPDF_EXPORT unsigned long FPDF_CALLCONV
-PDFKING_GetPageInks(FPDF_PAGE page, char* buffer, unsigned long length);
-
-// pdfking: the separations `names` (Cyan, Magenta, Yellow, Black or spots'
-// names), `count` of them, that `page` renders to in one go, its images
-// decoded for each kept across renders (bands). NULL on a bad argument.
-// Close it with PDFKING_CloseInks() before the page.
-FPDF_EXPORT PDFKING_INKS FPDF_CALLCONV
-PDFKING_LoadInks(FPDF_PAGE page, const FPDF_BYTESTRING* names, int count);
-
-// pdfking: render `page` once to `inks`, each onto its 8-bit gray bitmap in
-// `planes` (FPDFBitmap_Gray, one size, as many as inks, filled white by the
-// caller) from white (no ink) to black (full ink), overprint honored, placed
-// as FPDF_RenderPageBitmapWithMatrix() places the page. A plate is the same
-// whichever others are asked. Returns false on a bad argument or when the
-// render went wrong (the planes are then not to be used).
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV PDFKING_RenderInks(PDFKING_INKS inks,
-                                                       FPDF_PAGE page,
-                                                       FPDF_BITMAP* planes,
-                                                       const FS_MATRIX* matrix,
-                                                       const FS_RECTF* clipping,
-                                                       int flags);
-
-// pdfking: release `inks`.
-FPDF_EXPORT void FPDF_CALLCONV PDFKING_CloseInks(PDFKING_INKS inks);
 
 // Function: FPDF_DeviceToPage
 //          Convert the screen coordinates of a point to page coordinates.

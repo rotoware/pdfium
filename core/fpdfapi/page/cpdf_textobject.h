@@ -66,6 +66,13 @@ class CPDF_TextObject final : public CPDF_PageObject {
   const std::vector<uint32_t>& GetCharCodes() const { return char_codes_; }
   const std::vector<float>& GetCharKernings() const { return char_kernings_; }
   const std::vector<float>& GetCharPositions() const { return char_positions_; }
+  // pdfking: where the text leaves the current point, in text space (the
+  // position after its last character, its spacing included)
+  float GetAdvance() const { return advance_; }
+  // pdfking: shown right after the last show, with no Tm / Td / TD / T* /
+  // BT in between: it starts at the current point the last show left
+  bool gs_continues() const { return gs_continues_; }
+  void set_gs_continues(bool continues) { gs_continues_ = continues; }
 
   // Caller is expected to call SetDirty(true) when done changing the object
   // using these setters.
@@ -95,6 +102,8 @@ class CPDF_TextObject final : public CPDF_PageObject {
   std::vector<uint32_t> char_codes_;
   std::vector<float> char_kernings_;
   std::vector<float> char_positions_;
+  float advance_ = 0;
+  bool gs_continues_ = false;
 };
 
 #endif  // CORE_FPDFAPI_PAGE_CPDF_TEXTOBJECT_H_

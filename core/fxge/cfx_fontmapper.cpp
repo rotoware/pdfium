@@ -511,6 +511,13 @@ RetainPtr<CFX_Face> CFX_FontMapper::FindSubstFace(const ByteString& name,
                                                   int italic_angle,
                                                   FX_CodePage code_page,
                                                   CFX_SubstFont* subst_font) {
+  // pdfking: as gs, when its fonts are given
+  if (gs_fonts_.HasDir()) {
+    if (RetainPtr<CFX_Face> face = gs_fonts_.Face(name, flags)) {
+      subst_font->SetFamily(name);
+      return face;
+    }
+  }
   if (weight == 0) {
     weight = pdfium::kFontWeightNormal;
   }

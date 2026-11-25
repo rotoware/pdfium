@@ -4,6 +4,10 @@
 
 #include "core/fpdfapi/page/cpdf_indexedcs.h"
 
+#include <cmath>
+
+#include <algorithm>
+
 #include <set>
 
 #include "core/fpdfapi/page/cpdf_colorspace.h"
@@ -88,10 +92,16 @@ uint32_t CPDF_IndexedCS::v_Load(CPDF_Document* doc,
 
 std::optional<DataVector<float>> CPDF_IndexedCS::GetBaseComponents(
     pdfium::span<const float> pBuf) const {
-  int32_t index = static_cast<int32_t>(pBuf[0]);
-  if (index < 0 || index > max_index_) {
+  // pdfking: an index off the table, or between two, as gs takes it
+  // (gscolor2.c gs_indexed_limit_and_lookup): clamped to 0..hival, else
+  // truncated a hair up
+  if (std::isnan(pBuf[0])) {
     return std::nullopt;
   }
+  const float value = pBuf[0] + 0.001f;
+  const int32_t index = value < 0                ? 0
+                        : value >= max_index_ ? max_index_
+                                              : static_cast<int32_t>(value);
 
   DCHECK(!component_min_max_.empty());
   DCHECK_EQ(component_min_max_.size(), base_cs_->ComponentCount());

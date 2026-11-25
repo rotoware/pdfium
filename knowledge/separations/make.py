@@ -82,10 +82,13 @@ class Doc:
         content = (self.labels() + "".join(self.content)).encode()
         contents = self.stream("", content)
         annots = " ".join(self.obj(a) for a in getattr(self, "annots", []))
+        # inherit: the resources on the page tree's root, the page's from it
+        inherit = getattr(self, "inherit", False)
         page = self.obj(f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {self.W} {self.H}]"
-                        f" /Contents {contents} /Resources << {page_res} >>"
+                        f" /Contents {contents}" + ("" if inherit else f" /Resources << {page_res} >>")
                         + (f" /Annots [{annots}]" if annots else "") + " >>")
-        objs = [b"<< /Type /Catalog /Pages 2 0 R >>", f"<< /Type /Pages /Kids [{page}] /Count 1 >>".encode()] + self.objs
+        pages = f"<< /Type /Pages /Kids [{page}] /Count 1" + (f" /Resources << {page_res} >>" if inherit else "") + " >>"
+        objs = [b"<< /Type /Catalog /Pages 2 0 R >>", pages.encode()] + self.objs
         out = bytearray(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n")
         offsets = []
         for n, body in enumerate(objs, 1):
@@ -358,6 +361,80 @@ def overprint():
     return d
 
 
+# the mesh shadings' data (ISO 32000 8.7.4.5.5-8): 8-bit flags, 16-bit
+# coordinates over the cell, 16-bit colors over [0 1] (a Function's t)
+def mesh_data(items):
+    """items: ("f", flag) | ("p", x, y) | ("c", [components]); each flag
+    starts a byte, a vertex's or patch's data ends on one"""
+    out, bits, n = bytearray(), 0, 0
+
+    def put(v, nb):
+        nonlocal bits, n
+        bits, n = (bits << nb) | v, n + nb
+        while n >= 8:
+            n -= 8
+            out.append((bits >> n) & 0xFF)
+        bits &= (1 << n) - 1
+
+    for item in items:
+        if item[0] == "f":
+            put(item[1], 8)
+        elif item[0] == "p":
+            put(round(item[1] / CELL * 65535), 16)
+            put(round(item[2] / CELL * 65535), 16)
+        else:
+            for v in item[1]:
+                put(round(v * 65535), 16)
+    return bytes(out)
+
+
+def mesh_shadings(d, space, ncomp, c0, c1, fn):
+    """per kind (label, shading): types 4 (flags 0, 1, 2), 5, 6 and 7 in
+    the colors c0..c1 mixed, then 4 and 6 with t through `fn`"""
+    mix = lambda w: [a + (b - a) * w for a, b in zip(c0, c1)]
+    tri = [(0, 0, 0), (30, 2, 1), (2, 30, .5), (30, 30, .2), (15, 12, .8)]
+    flags = [0, 0, 0, 1, 2]
+    lattice = [(x, y, (x + 2 * y) / 90) for y in (0, 14, 30) for x in (0, 16, 30)]
+    lattice[4] = (13, 16, .9)
+    coons = [(0, 0), (-4, 10), (4, 20), (0, 30), (10, 34), (20, 26), (30, 30), (34, 20), (26, 10), (30, 0), (20, -4), (10, 4)]
+    coons2 = [(10, 34), (20, 26), (30, 30), (34, 20), (26, 10), (30, 0)]
+    inner = [(10, 10), (10, 20), (20, 20), (20, 10)]
+    corners, corners2 = [0, 1, .3, .7], [.5, .1]
+
+    def vertex(x, y, w, use_fn):
+        return [("p", x, y), ("c", [w] if use_fn else mix(w))]
+
+    def dic(kind, use_fn, extra=""):
+        dec = " ".join(["0 1"] * (1 if use_fn else ncomp))
+        f = f" /Function << /FunctionType 2 /Domain [0 1] /C0 {fn[0]} /C1 {fn[1]} /N 1 >>" if use_fn else ""
+        return (f"/ShadingType {kind} /ColorSpace {space} /BitsPerCoordinate 16 /BitsPerComponent 16"
+                f" /Decode [0 {CELL} 0 {CELL} {dec}]{extra}{f}")
+
+    def free(use_fn):
+        items = []
+        for flag, (x, y, w) in zip(flags, tri):
+            items += [("f", flag)] + vertex(x, y, w, use_fn)
+        return dic(4, use_fn, " /BitsPerFlag 8"), mesh_data(items)
+
+    def lattice_mesh():
+        items = []
+        for x, y, w in lattice:
+            items += vertex(x, y, w, False)
+        return dic(5, False, " /VerticesPerRow 3"), mesh_data(items)
+
+    def patches(kind, use_fn):
+        items = [("f", 0)] + [("p", x, y) for x, y in coons] + ([("p", x, y) for x, y in inner] if kind == 7 else [])
+        items += [("c", [w] if use_fn else mix(w)) for w in corners]
+        # a second patch on the first's side D2 (flag 1), 2 new colors
+        items += [("f", 1)] + [("p", x + 26, y - 4) for x, y in coons2[3:]] + [("p", x + 26, y - 4) for x, y in coons[:3]]
+        items += [("p", x + 20, y) for x, y in inner] if kind == 7 else []
+        items += [("c", [w] if use_fn else mix(w)) for w in corners2]
+        return dic(kind, use_fn, " /BitsPerFlag 8"), mesh_data(items)
+
+    return [("tri flags 0 1 2", free(False)), ("lattice", lattice_mesh()), ("coons", patches(6, False)),
+            ("tensor", patches(7, False)), ("tri Function", free(True)), ("coons Function", patches(6, True))]
+
+
 # ── 08 shadings: axial across the cell, per ink and space ─────────────────
 def shadings():
     d = Doc([], [])
@@ -370,8 +447,13 @@ def shadings():
              ("RGB", "/DeviceRGB", "[1 0 0]", "[0 0 1]"),
              ("Sep 021", cs[s021], "[0]", "[1]"),
              ("DeviceN", cs[sn], "[1 0]", "[0 1]")]
-    d.rows, d.cols = [s[0] for s in specs], ["axial 1 cell", "axial 4 cells", "", "", "radial"]
+    meshes = ["tri flags 0 1 2", "lattice", "coons", "tensor", "tri Function", "coons Function"]
+    d.rows, d.cols = [s[0] for s in specs], ["axial 1 cell", "axial 4 cells", "", "", "radial"] + meshes
     for r, (label, space, c0, c1) in enumerate(specs):
+        comps = lambda c: [float(v) for v in c.strip("[]").split()]
+        for m, (kind, (dic, data)) in enumerate(mesh_shadings(d, space, len(comps(c0)), comps(c0), comps(c1), (c0, c1))):
+            sh = d.add("Shading", f"M{r}_{m}", d.stream(dic, data))
+            d.cell(r, 5 + m, f"0 0 {CELL} {CELL} re W n /{sh} sh")
         fn = f"<< /FunctionType 2 /Domain [0 1] /C0 {c0} /C1 {c1} /N 1 >>"
         a1 = d.add("Shading", f"A{r}", d.obj(f"<< /ShadingType 2 /ColorSpace {space} /Coords [0 0 {CELL} 0] /Function {fn} >>"))
         a4 = d.add("Shading", f"B{r}", d.obj(f"<< /ShadingType 2 /ColorSpace {space} /Coords [0 0 {4 * CELL + 3 * GAP} 0] /Function {fn} >>"))
@@ -413,10 +495,32 @@ def groups():
              ("group Multiply", mul_group, ""), ("smask luminosity", k, f"/{smask_l} gs "), ("smask alpha", k, f"/{smask_a} gs "),
              ("group ca .5", group, f"/{a5} gs "), ("group smask", group, f"/{smask_l} gs "),
              ("group Multiply smask", mul_group, f"/{smask_a} gs ")]
-    d.rows, d.cols = ["over Y .5 + 021 .5"], [c[0] for c in cases]
+    d.rows, d.cols = ["over Y .5 + 021 .5", "on the page"], [c[0] for c in cases]
     base = f"0 0 0.5 0 k {box()} /{s021} cs 0.5 scn {box(0, 0, 15)}"
     for c, (label, f, state) in enumerate(cases):
         d.cell(0, c, f"{base}\nq {state}/{f} Do Q")
+    # on the page as gs's page group has it: nothing painted there yet (a
+    # group blends with nothing), half of it painted; soft masks drawn as
+    # gs draws them (a shading's steps)
+    fade = d.add("Shading", "Fade", d.obj("<< /ShadingType 3 /ColorSpace /DeviceGray /Coords [15 15 0 15 15 15]"
+                                          " /Function << /FunctionType 2 /Domain [0 1] /C0 [1] /C1 [0] /N 1 >>"
+                                          " /Extend [true true] >>"))
+    fade_form = form("Fd", f"/{fade} sh", "/Group << /S /Transparency /CS /DeviceRGB >>")
+    smask_fade = d.gs("SMF", f"<< /SMask << /Type /Mask /S /Luminosity /BC [0] /G {d.res['XObject'][fade_form]} >> >>")
+    blends = {m: d.gs(f"B{m}", f"<< /BM /{m} >>") for m in ("Difference", "Screen", "Exclusion", "Color")}
+    a3 = d.gs("A3", "<< /ca 0.3 >>")
+    page = [("smask shading", k, f"/{smask_fade} gs ")]
+    for m, g in blends.items():
+        page.append((f"group {m}", form(f"G{m}", f"0.3 g {box(5, 5, 20, 20)} 1 0 0 0 k {box(10, 10, 15, 15)}",
+                                         "/Group << /S /Transparency >>"), f"/{g} gs "))
+    page.append(("Color", form("OC", f"0.2 0.7 0.1 0.1 k {box(5, 5, 20, 20)}", ""), f"/{blends['Color']} gs "))
+    page += [("group ca .3 smask", form("Gk", f"1 0 0 0 k {box(5, 5, 20, 20)} 0 0 0 1 k {box(10, 10, 15, 15)}",
+                                        "/Group << /S /Transparency >>"), f"/{a3} gs /{smask_fade} gs ")]
+    d.cols += [""] * (2 * len(page) - len(d.cols))
+    half = f"0 0 0 0.2 k {box(0, 0, 15)}"
+    for c, (label, f, state) in enumerate(page):
+        d.cell(1, 2 * c, f"q {state}/{f} Do Q", col=label + " / none")
+        d.cell(1, 2 * c + 1, f"{half}\nq {state}/{f} Do Q", col=label + " / half")
     return d
 
 
@@ -1014,11 +1118,168 @@ def spot_discovery():
     return d
 
 
+# ── 18 corpus: what the public corpus (corpus/corpus.py) found off ──────
+# an ICC RGB not sRGB with no output intent (gs -dUseFastColor takes the
+# values as they are), ColorBurn and ColorDodge on a backdrop with no ink,
+# spots in resources the page inherits, a shading whose function does not
+# fit (drawn after the page was loaded once: nothing), printed form fields
+CB_CASES = [("none / C1", "", "1 0 0 0 k"), ("none / C.5", "", "0.5 0 0 0 k"), ("C.3 / C1", "0.3 0 0 0 k", "1 0 0 0 k"),
+            ("C.3 / none", "0.3 0 0 0 k", "0 0 0 0 k"), ("C1 / C.5", "1 0 0 0 k", "0.5 0 0 0 k"),
+            ("K.5 / blue", "0 0 0 0.5 k", "0 0 1 rg"), ("red / blue", "1 0 0 rg", "0 0 1 rg")]
+
+
+def corpus():
+    d = Doc([], [])
+    d.inherit = True
+    p3 = open(f"{ICC}/Display P3.icc", "rb").read()
+    p3_cs = d.add("ColorSpace", "P3", d.obj(f"[/ICCBased {d.stream('/N 3', p3)}]"))
+    inherited = d.add("ColorSpace", "SI", d.obj("[/Separation /Spot#20Inherited /DeviceCMYK << /FunctionType 2"
+                                                " /Domain [0 1] /C0 [0 0 0 0] /C1 [0 0.5 0 0.5] /N 1 >>]"))
+    d.rows = ["P3 vec", "P3 img", "ColorBurn", "ColorBurn ca .5", "ColorDodge", "inherited spot", "bad shading",
+              "fields", "uncolored pattern", "transfer", "Multiply in Multiply", "Indexed off range", "Type3 d0 ca .5"]
+    d.cols = [f"{t}%" for t in TINTS]
+    for c, t in enumerate(TINTS):
+        x = t / 100
+        d.cell(0, c, f"/{p3_cs} cs {x:.4f} 0.5 {1 - x:.4f} sc {box()}")
+        d.cell(5, c, f"/{inherited} cs {x:.4f} scn {box()}")
+    data = bytes(round(x * 255) for t in TINTS for x in (t / 100, 0.5, 1 - t / 100))
+    key = d.image("P3I", len(TINTS), 1, d.res["ColorSpace"][p3_cs], 8, data)
+    x0, y0 = d.xy(1, 0)
+    d.content.append(f"q {len(TINTS) * (CELL + GAP)} 0 0 {CELL} {x0} {y0} cm /{key} Do Q\n")
+    for c in range(len(TINTS)):
+        x, y = d.xy(1, c)
+        d.cells.append({"row": "P3 img", "col": f"{TINTS[c]}%", "x": x, "y": y, "half": False})
+    for r, (mode, extra) in [(2, ("ColorBurn", "")), (3, ("ColorBurn", " /ca 0.5")), (4, ("ColorDodge", ""))]:
+        g = d.gs(f"G{r}", f"<< /BM /{mode}{extra} >>")
+        for c, (label, back, src) in enumerate(CB_CASES):
+            d.cell(r, c, f"{back} {box() if back else ''} q /{g} gs {src} {box(15, 0, 15)} Q", half=True,
+                   col=label)
+    # a type 2 shading over an 18-input function: invalid, nothing drawn
+    fn = d.stream("/FunctionType 0 /Domain [" + "0 1 " * 18 + "] /Range [0 1] /Size [" + "1 " * 18 + "]"
+                  " /BitsPerSample 8", bytes(64))
+    d.add("Shading", "Bad", d.obj(f"<< /ShadingType 2 /ColorSpace /DeviceRGB /Coords [0 0 {CELL} 0]"
+                                  f" /Extend [true true] /Function {fn} >>"))
+    d.cell(6, 0, f"0 0 {CELL} {CELL} re W n /Bad sh")
+    # form fields: printable, hidden, not printable; each its appearance
+    annots = []
+    for c, (label, flags) in enumerate([("print", 4), ("hidden", 6), ("no print", 0)]):
+        x, y = d.xy(7, c)
+        ap = d.stream(f"/Type /XObject /Subtype /Form /BBox [0 0 {CELL} {CELL}]",
+                      b"0.2 0.4 0 0.1 k 0 0 30 30 re f 0 0 0 1 k 5 5 20 20 re f")
+        annots.append(f"<< /Type /Annot /Subtype /Widget /FT /Tx /T ({label}) /F {flags}"
+                      f" /Rect [{x} {y} {x + CELL} {y + CELL}] /AP << /N {ap} >> >>")
+        d.cells.append({"row": "fields", "col": label, "x": x, "y": y, "half": False})
+    d.annots = annots
+    # uncolored tiling patterns: the cell's shapes in the color given
+    cell = d.stream("/PatternType 1 /PaintType 2 /TilingType 1 /BBox [0 0 10 10] /XStep 10 /YStep 10"
+                    " /Resources << >>", b"0 0 5 10 re f", compress=False)
+    d.add("Pattern", "UP", cell)
+    for name_, base in [("UC", "/DeviceCMYK"), ("UR", "/DeviceRGB"), ("UG", "/DeviceGray")]:
+        d.add("ColorSpace", name_, f"[/Pattern {base}]")
+    for c, op in enumerate(["/UC cs 0.2 0.5 0 0.3 /UP scn", "/UR cs 0.8 0.2 0.2 /UP scn", "/UG cs 0.4 /UP scn"]):
+        d.cell(8, c, f"{op} {box()}")
+    # transfer functions: one for all, and an array (C, M, Y by R, G, B,
+    # K and spots by gray), on fills and an image
+    inv = d.stream("/FunctionType 4 /Domain [0 1] /Range [0 1]", b"{1 exch sub}", compress=False)
+    # (the array's functions symmetric, 1 - x: on a page with transparency gs
+    # maps a function f as f(ink), without, as 1 - f(1 - ink); pdfium the
+    # latter, see README)
+    trs = [d.gs("T1", f"<< /TR {inv} >>"), d.gs("T4", f"<< /TR [{inv} /Identity {inv} {inv}] >>")]
+    s021 = d.spot(P021, "0 0.53 1 0")
+    img = d.image("TRI", 2, 1, "/DeviceCMYK", 8, bytes([50, 100, 0, 30, 200, 0, 100, 60]))
+    c = 0
+    for tr in trs:
+        for op in ["0.2 0.5 0 0.3 k " + box(), f"/{s021} cs 0.4 scn " + box(), "0.75 0.25 0.125 rg " + box(),
+                   f"{CELL} 0 0 {CELL} 0 0 cm /{img} Do"]:
+            d.cell(9, c, f"q /{tr} gs {op} Q")
+            c += 1
+    # a non-isolated Multiply group at ca .75 in another: the backdrop taken
+    # out of each before it is blended
+    mul = d.gs("MU", "<< /BM /Multiply /ca 0.75 /CA 0.75 >>")
+    inner = d.add("XObject", "MI", d.stream(
+        f"/Type /XObject /Subtype /Form /BBox [0 0 {CELL} {CELL}] /Group << /S /Transparency >>",
+        b"0 0.6 0.3 0 k 5 5 20 20 re f"))
+    outer = d.add("XObject", "MO", d.stream(
+        f"/Type /XObject /Subtype /Form /BBox [0 0 {CELL} {CELL}] /Group << /S /Transparency >>"
+        f" /Resources << /ExtGState << /M {d.res['ExtGState'][mul]} >> /XObject << /I {d.res['XObject'][inner]} >> >>",
+        b"0.4 0 0 0 k 0 0 30 15 re f /M gs /I Do"))
+    for c, back in enumerate(["", "0.2 0.1 0.5 0.1 k " + box(), f"/{s021} cs 0.5 scn " + box()]):
+        d.cell(10, c, f"{back} q /{mul} gs /{outer} Do Q")
+    # an index off the table or between two: clamped, truncated
+    idx = d.add("ColorSpace", "IX", "[/Indexed /DeviceCMYK 2 <ff000000 00ff0000 0000ff00>]")
+    for c, v in enumerate(["-1", "0.6", "1.9997", "2.5", "7"]):
+        d.cell(11, c, f"/{idx} cs {v} sc {box()}")
+    # a Type3 glyph in its own colors (d0) at ca .5: the text's opacity on it
+    glyph = d.stream("", b"1000 0 d0 0.3 0.6 0 0.2 k 0 0 1000 1000 re f")
+    t3 = d.obj(f"<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] /FontMatrix [0.001 0 0 0.001 0 0]"
+               f" /CharProcs << /a {glyph} >> /Encoding << /Differences [97 /a] >> /FirstChar 97 /LastChar 97"
+               f" /Widths [1000] /Resources << >> >>")
+    d.add("Font", "T3", t3)
+    half = d.gs("HA", "<< /ca 0.5 >>")
+    d.cell(12, 0, f"0 0 0.4 0 k {box()} q /{half} gs BT /T3 30 Tf 0 0 Td (a) Tj ET Q")
+    return d
+
+
+# tiling patterns as gs tiles them: the cell drawn once at gs's size and
+# pixel origin, copied at whole-pixel steps (gsptype1.c, gxp1fill.c); each
+# column the pattern space scaled (1, 1.37, 0.71)
+PATTERN_SCALES = [1, 1.37, 0.71]
+
+
+def patterns():
+    d = Doc(["aligned 7", "step > bbox", "rotated 30", "overlap", "fraction", "TilingType 2", "uncolored rot",
+             "stroke", "text", "image rot", "image grid", "shading text"], [f"x{s}" for s in PATTERN_SCALES])
+    d.add("Font", "Fh", "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    star = b"0.2 0.6 0 0.1 k 3.5 0.3 m 4.3 2.4 l 6.5 2.5 l 4.8 3.9 l 5.4 6.1 l 3.5 4.9 l 1.6 6.1 l 2.2 3.9 l h f"
+    rgb = bytes((x * 37 + y * 91) % 256 for y in range(12) for x in range(12) for _ in range(3))
+    img = d.image("PI", 12, 12, "/DeviceRGB", 8, rgb)
+    img_ref = d.res["XObject"][img]
+    d.add("ColorSpace", "PU", "[/Pattern /DeviceCMYK]")
+    rot = "0.866 0.5 -0.5 0.866"
+
+    def tiling(key, s, bbox, step, data, matrix="1 0 0 1", paint=1, tiling_type=1, res="<< >>"):
+        a, b, c, e = (float(v) for v in matrix.split())
+        m = f"{a * s:.4f} {b * s:.4f} {c * s:.4f} {e * s:.4f} 0 0"
+        return d.add("Pattern", key, d.stream(
+            f"/PatternType 1 /PaintType {paint} /TilingType {tiling_type} /BBox [{bbox}] /XStep {step[0]}"
+            f" /YStep {step[1]} /Matrix [{m}] /Resources {res}", data))
+
+    for c, s in enumerate(PATTERN_SCALES):
+        cases = [
+            tiling(f"A{c}", s, "0 0 7 7", (7, 7), b"0.6 0 0.4 0 k 0 0 7 7 re f " + star),
+            tiling(f"B{c}", s, "0 0 8 10", (9, 11), b"1 0 0 0 k 0 0 4 10 re f 0 0 1 0 k 4 0 4 10 re f"),
+            tiling(f"R{c}", s, "0 0 9 9", (13, 13), b"0.1 0.05 0.6 0 k 0 0 9 9 re f " + star, rot),
+            tiling(f"O{c}", s, "0 0 12 12", (9, 9), b"0 0.8 0.3 0 k 0 0 12 6 re f 0.7 0 0 0.2 k 0 6 12 6 re f"),
+            tiling(f"F{c}", s, "0 0 6.3 6.3", (6.3, 6.3), b"0 0 0.9 0 k 0 0 3.1 6.3 re f 0.5 0.5 0 0 k 3.1 0 3.2 3 re f"),
+            tiling(f"T{c}", s, "0 0 6.3 6.3", (6.3, 6.3), b"0 0 0.9 0 k 0 0 3.1 6.3 re f 0.5 0.5 0 0 k 3.1 0 3.2 3 re f",
+                   tiling_type=2),
+        ]
+        for r, key in enumerate(cases):
+            d.cell(r, c, f"/Pattern cs /{key} scn {box(2, 2, 26, 26)}")
+        up = tiling(f"U{c}", s, "0 0 6 6", (8, 7), b"0 0 4 4 re f 2 4 m 6 6 l 5 2 l f", rot, paint=2)
+        d.cell(6, c, f"/PU cs 0.3 0.7 0 0.1 /{up} scn {box(1, 1, 28, 28)}")
+        d.cell(7, c, f"/Pattern CS /{cases[1]} SCN 4 w 4 4 m 26 10 l 14 26 l S")
+        d.cell(8, c, f"/Pattern cs /{cases[0]} scn BT /Fh 26 Tf 1 6 Td (Ag) Tj ET")
+        im = tiling(f"I{c}", s, "0 0 10 10", (11, 12), b"q 7.3 2.5 -2.5 7.3 2.4 0.3 cm /Im Do Q", rot,
+                    res=f"<< /XObject << /Im {img_ref} >> >>")
+        d.cell(9, c, f"/Pattern cs /{im} scn {box(1, 1, 28, 28)}")
+        ig = tiling(f"G{c}", s, "0 0 10 10", (10.5, 10.5), b"q 9.37 0 0 9.37 0.31 0.43 cm /Im Do Q",
+                    res=f"<< /XObject << /Im {img_ref} >> >>")
+        d.cell(10, c, f"/Pattern cs /{ig} scn {box(1, 1, 28, 28)}")
+        x, y = d.xy(11, c)
+        sh = d.add("Pattern", f"S{c}", d.obj(
+            f"<< /PatternType 2 /Shading << /ShadingType 2 /ColorSpace /DeviceCMYK /Coords [{x} 0 {x + CELL} 0]"
+            f" /Function << /FunctionType 2 /Domain [0 1] /C0 [1 0 0 0] /C1 [0 1 0.5 0] /N 1 >> >> >>"))
+        d.cell(11, c, f"/Pattern cs /{sh} scn BT /Fh {round(26 * s)} Tf 1 6 Td (Ag) Tj ET")
+    return d
+
+
 TESTS = [("00-sheet", sheet), ("01-tints", tints), ("02-blends", blends), ("03-rgb-gray-cie-vectors", rgb_vectors),
          ("04-images-process-gray", images_process), ("05-images-rgb", images_rgb), ("06-images-spot", images_spot),
          ("07-overprint", overprint), ("08-shadings", shadings), ("09-groups-softmasks", groups), ("10-icc", icc), ("11-images", images), ("12-text", text), ("13-text-overprint", text_overprint), ("14-knockout", knockout),
          ("15-nonseparable", nonseparable), ("16-overprint-groups", overprint_groups),
-         ("17-spot-discovery", spot_discovery)]
+         ("17-spot-discovery", spot_discovery), ("18-corpus", corpus),
+         ("19-patterns", patterns)]
 
 if __name__ == "__main__":
     out = sys.argv[1]

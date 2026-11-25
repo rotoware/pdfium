@@ -57,6 +57,9 @@ class CPDF_Color {
 
   // Should only be called if IsPattern() returns true.
   RetainPtr<CPDF_Pattern> GetPattern() const;
+  // pdfking: an uncolored pattern's color components, in its space's base;
+  // empty for any other color.
+  pdfium::span<const float> GetPatternComponents() const;
 
  protected:
   bool IsPatternInternal() const;

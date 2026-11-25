@@ -77,7 +77,9 @@ void RenderPageImpl(CPDF_PageRenderContext* context,
 #endif
 
     // TODO(https://crbug.com/42271964) - maybe pass true here.
-    const bool bShowWidget = false;
+    // pdfking: printed, the printable form fields too, as a printer (gs)
+    // prints them: nothing draws them later, there is no form fill here
+    const bool bShowWidget = is_printing;
     pList->DisplayAnnots(context->context_.get(), is_printing, matrix,
                          bShowWidget);
   }

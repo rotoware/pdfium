@@ -220,6 +220,9 @@ source_set("pdfium_public_headers_impl") {
     "public/fpdf_thumbnail.h",
     "public/fpdf_transformpage.h",
     "public/fpdfview.h",
+
+    # pdfking
+    "public/fpdf_pdfking.h",
   ]
   visibility = [ ":*" ]
 }

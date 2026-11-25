@@ -3,18 +3,24 @@
 // document read once. Times each plate; --dump writes the plates raw.
 // usage: bench <pdf> <dpi> <rows> <plate,plate,...> [--bgra] [--dump=<prefix>]
 //        [--page=n] (0-based, else the first)
+//        [--gsfonts=<dir>] (gs's share/ghostscript: fonts not embedded as
+//        gs loads them, PDFKING_SetGsFontDir)
+//        [--profiles=<dir>] (gs's iccprofiles: default_rgb.icc and
+//        default_cmyk.icc, PDFKING_SetBlendProfiles: RGB page groups as gs)
 //        [--crop=x,y,w,h] (pixels from the top left: that window alone)
 //        [--ink] (all plates in one render a band, PDFKING_RenderInks)
 //        <plates> "auto": the process plates and the page's spots
 //        (PDFKING_GetPageInks), printed to stdout one a line
 
 #include <chrono>
+#include <fstream>
+#include <iterator>
 #include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>
 
-#include "public/fpdfview.h"
+#include "public/fpdf_pdfking.h"
 
 static double Now() {
   return std::chrono::duration<double>(
@@ -34,10 +40,11 @@ static int Inks(FPDF_DOCUMENT doc,
                 double start) {
   double began = Now();
   FPDF_PAGE page = FPDF_LoadPage(doc, page_index);
-  int width = static_cast<int>(FPDF_GetPageWidthF(page) * dpi / 72 + 0.5);
-  int height = static_cast<int>(FPDF_GetPageHeightF(page) * dpi / 72 + 0.5);
-  float lift =
-      height - FPDF_GetPageHeightF(page) * static_cast<float>(dpi / 72);
+  // pixels a unit of the page: its /UserUnit points
+  const double scale = dpi / 72 * PDFKING_GetPageUserUnit(page);
+  int width = static_cast<int>(FPDF_GetPageWidthF(page) * scale + 0.5);
+  int height = static_cast<int>(FPDF_GetPageHeightF(page) * scale + 0.5);
+  float lift = height - FPDF_GetPageHeightF(page) * static_cast<float>(scale);
   if (crop[2]) {
     width = crop[2];
     height = crop[3];
@@ -62,10 +69,10 @@ static int Inks(FPDF_DOCUMENT doc,
     for (FPDF_BITMAP band : bands) {
       FPDFBitmap_FillRect(band, 0, 0, width, rows, 0xFFFFFFFF);
     }
-    FS_MATRIX matrix = {static_cast<float>(dpi / 72),
+    FS_MATRIX matrix = {static_cast<float>(scale),
                         0,
                         0,
-                        static_cast<float>(dpi / 72),
+                        static_cast<float>(scale),
                         static_cast<float>(-crop[0]),
                         static_cast<float>(-crop[1] - top) + lift};
     FS_RECTF clip = {0, 0, static_cast<float>(width), static_cast<float>(rows)};
@@ -122,6 +129,8 @@ int main(int argc, char** argv) {
   std::string dump;
   int crop[4] = {0, 0, 0, 0};
   int page_index = 0;
+  std::string profiles;
+  std::string gsfonts;
   for (int i = 5; i < argc; ++i) {
     if (!strcmp(argv[i], "--bgra")) {
       bgra = true;
@@ -129,6 +138,10 @@ int main(int argc, char** argv) {
       ink = true;
     } else if (!strncmp(argv[i], "--dump=", 7)) {
       dump = argv[i] + 7;
+    } else if (!strncmp(argv[i], "--gsfonts=", 10)) {
+      gsfonts = argv[i] + 10;
+    } else if (!strncmp(argv[i], "--profiles=", 11)) {
+      profiles = argv[i] + 11;
     } else if (!strncmp(argv[i], "--page=", 7)) {
       page_index = atoi(argv[i] + 7);
     } else if (!strncmp(argv[i], "--crop=", 7)) {
@@ -139,12 +152,30 @@ int main(int argc, char** argv) {
 
   double start = Now();
   FPDF_LIBRARY_CONFIG config = {};
-  config.version = 2;
+  // 6: /BrotliDecode streams read (pdfium_test reads them too)
+  config.version = 6;
+  config.m_BrotliEnabled = true;
   FPDF_InitLibraryWithConfig(&config);
+  if (!gsfonts.empty()) {
+    PDFKING_SetGsFontDir(gsfonts.c_str());
+  }
   FPDF_DOCUMENT doc = FPDF_LoadDocument(path, nullptr);
   if (!doc) {
     fprintf(stderr, "cannot open %s: %lu\n", path, FPDF_GetLastError());
     return 1;
+  }
+  if (!profiles.empty()) {
+    auto read = [&](const char* name) {
+      std::ifstream in(profiles + "/" + name, std::ios::binary);
+      return std::string(std::istreambuf_iterator<char>(in), {});
+    };
+    std::string rgb = read("default_rgb.icc");
+    std::string cmyk = read("default_cmyk.icc");
+    std::string gray = read("default_gray.icc");
+    PDFKING_SetBlendProfiles(
+        doc, reinterpret_cast<const unsigned char*>(rgb.data()), rgb.size(),
+        reinterpret_cast<const unsigned char*>(cmyk.data()), cmyk.size(),
+        reinterpret_cast<const unsigned char*>(gray.data()), gray.size());
   }
   int flags = FPDF_PRINTING | FPDF_ANNOT | FPDF_NO_NATIVETEXT |
               FPDF_RENDER_NO_SMOOTHTEXT | FPDF_RENDER_NO_SMOOTHIMAGE |
@@ -177,13 +208,14 @@ int main(int argc, char** argv) {
     PDFKING_SetPlate(doc, plate.c_str());
     // the page loaded again a plate: its image cache holds the last plate's
     FPDF_PAGE page = FPDF_LoadPage(doc, page_index);
-    // the page's size rounded, as gs sizes it; drawn at dpi / 72 exactly
-    int width = static_cast<int>(FPDF_GetPageWidthF(page) * dpi / 72 + 0.5);
-    int height = static_cast<int>(FPDF_GetPageHeightF(page) * dpi / 72 + 0.5);
+    // the page's size rounded, as gs sizes it (its /UserUnit points a
+    // unit); drawn at that scale exactly
+    const double scale = dpi / 72 * PDFKING_GetPageUserUnit(page);
+    int width = static_cast<int>(FPDF_GetPageWidthF(page) * scale + 0.5);
+    int height = static_cast<int>(FPDF_GetPageHeightF(page) * scale + 0.5);
     // pdfium puts the page's top on the bitmap's, gs (and switch's Install)
     // its bottom: a page some fraction of a pixel tall moves by it
-    float lift =
-        height - FPDF_GetPageHeightF(page) * static_cast<float>(dpi / 72);
+    float lift = height - FPDF_GetPageHeightF(page) * static_cast<float>(scale);
     if (crop[2]) {
       width = crop[2];
       height = crop[3];
@@ -204,10 +236,10 @@ int main(int argc, char** argv) {
     unsigned long sum = 0;
     for (int top = 0; top < height; top += rows) {
       FPDFBitmap_FillRect(band, 0, 0, width, rows, 0xFFFFFFFF);
-      FS_MATRIX matrix = {static_cast<float>(dpi / 72),
+      FS_MATRIX matrix = {static_cast<float>(scale),
                           0,
                           0,
-                          static_cast<float>(dpi / 72),
+                          static_cast<float>(scale),
                           static_cast<float>(-crop[0]),
                           static_cast<float>(-crop[1] - top) + lift};
       FS_RECTF clip = {0, 0, static_cast<float>(width),

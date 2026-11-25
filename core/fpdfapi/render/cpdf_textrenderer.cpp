@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "core/fpdfapi/font/cpdf_font.h"
+#include "core/fpdfapi/page/cpdf_inks.h"
 #include "core/fpdfapi/render/cpdf_renderoptions.h"
 #include "core/fxge/cfx_graphstatedata.h"
 #include "core/fxge/cfx_path.h"
@@ -43,6 +44,14 @@ CFX_TextRenderOptions GetTextRenderOptionsHelper(
     text_options.native_text = false;
   }
 
+  // pdfking: on inks, glyphs as gs renders them at the render's resolution
+  const CPDF_Document* doc = pFont->GetDocument();
+  if (const CPDF_Inks* inks = doc ? GetGsInks(doc) : nullptr) {
+    text_options.gs_dpi = inks->dpi();
+    text_options.gs_outline = inks->page_transparent();
+    text_options.gs_page_origin = inks->page_origin();
+  }
+
   return text_options;
 }
 
@@ -68,6 +77,10 @@ bool CPDF_TextRenderer::DrawTextPath(
     return true;
   }
 
+  // pdfking: on inks, glyph outlines as gs's charpath gives them
+  const CPDF_Document* doc = pFont->GetDocument();
+  const CPDF_Inks* inks = doc ? GetGsInks(doc) : nullptr;
+  const float gs_dpi = inks ? inks->dpi() : 0.0f;
   bool bDraw = true;
   int32_t fontPosition = pos[0].fallback_font_position_;
   size_t startIndex = 0;
@@ -81,7 +94,7 @@ bool CPDF_TextRenderer::DrawTextPath(
     if (!pDevice->DrawTextPath(
             pdfium::span(pos).subspan(startIndex, i - startIndex), font,
             font_size, mtText2User, pUser2Device, pGraphState, fill_argb,
-            stroke_argb, pClippingPath, fill_options)) {
+            stroke_argb, pClippingPath, fill_options, gs_dpi)) {
       bDraw = false;
     }
     fontPosition = curFontPosition;
@@ -91,7 +104,7 @@ bool CPDF_TextRenderer::DrawTextPath(
   if (!pDevice->DrawTextPath(pdfium::span(pos).subspan(startIndex), font,
                              font_size, mtText2User, pUser2Device, pGraphState,
                              fill_argb, stroke_argb, pClippingPath,
-                             fill_options)) {
+                             fill_options, gs_dpi)) {
     bDraw = false;
   }
   return bDraw;
@@ -142,7 +155,8 @@ bool CPDF_TextRenderer::DrawNormalText(CFX_RenderDevice* pDevice,
                                        float font_size,
                                        const CFX_Matrix& mtText2Device,
                                        FX_ARGB fill_argb,
-                                       const CPDF_RenderOptions& options) {
+                                       const CPDF_RenderOptions& options,
+                                       bool gs_positioned) {
   std::vector<TextCharPos> pos =
       pFont->GetCharPosList(char_codes, char_pos, font_size);
   if (pos.empty()) {
@@ -151,6 +165,7 @@ bool CPDF_TextRenderer::DrawNormalText(CFX_RenderDevice* pDevice,
 
   CFX_TextRenderOptions text_options =
       GetTextRenderOptionsHelper(pFont, options);
+  text_options.gs_positioned = gs_positioned;
   bool bDraw = true;
   int32_t fontPosition = pos[0].fallback_font_position_;
   size_t startIndex = 0;

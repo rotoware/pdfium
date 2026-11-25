@@ -38,6 +38,7 @@ std::unique_ptr<CPDF_Form> CPDF_TilingPattern::Load(CPDF_PageObject* pPageObj) {
   colored_ = dict->GetIntegerFor("PaintType") == 1;
   xstep_ = fabsf(dict->GetFloatFor("XStep"));
   ystep_ = fabsf(dict->GetFloatFor("YStep"));
+  tiling_type_ = dict->GetIntegerFor("TilingType");
 
   RetainPtr<CPDF_Stream> pStream = ToStream(pattern_obj());
   if (!pStream) {

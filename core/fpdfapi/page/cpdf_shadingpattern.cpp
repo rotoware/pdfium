@@ -89,7 +89,13 @@ bool CPDF_ShadingPattern::Load() {
   }
 
   shading_type_ = ToShadingType(pShadingDict->GetIntegerFor("ShadingType"));
-  return Validate();
+  // pdfking: invalid stays invalid: a later Load() (the page loaded again,
+  // the pattern cached in the document) would take it as loaded
+  if (!Validate()) {
+    shading_type_ = kInvalidShading;
+    return false;
+  }
+  return true;
 }
 
 RetainPtr<const CPDF_Object> CPDF_ShadingPattern::GetShadingObject() const {

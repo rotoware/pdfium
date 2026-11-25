@@ -48,11 +48,11 @@ class CPDF_Function {
                     float ymin,
                     float ymax) const;
 
-#if defined(PDF_USE_SKIA)
+  // pdfking: also gs's shading decomposition (is_monotonic)
+  Type GetType() const { return type_; }
   const CPDF_SampledFunc* ToSampledFunc() const;
   const CPDF_ExpIntFunc* ToExpIntFunc() const;
   const CPDF_StitchFunc* ToStitchFunc() const;
-#endif  // defined(PDF_USE_SKIA)
 
  protected:
   explicit CPDF_Function(Type type);

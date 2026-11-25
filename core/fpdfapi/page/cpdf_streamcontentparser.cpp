@@ -10,6 +10,7 @@
 #include <array>
 #include <map>
 #include <memory>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -42,6 +43,7 @@
 #include "core/fxcrt/check_op.h"
 #include "core/fxcrt/compiler_specific.h"
 #include "core/fxcrt/containers/contains.h"
+#include "core/fxcrt/fx_extension.h"
 #include "core/fxcrt/fx_safe_types.h"
 #include "core/fxcrt/numerics/safe_conversions.h"
 #include "core/fxcrt/scoped_set_insertion.h"
@@ -51,6 +53,44 @@
 #include "core/fxge/cfx_graphstatedata.h"
 
 namespace {
+
+// pdfking: `word` as pdfi_read_num reads a number with an exponent
+// ("1e2"): a sign, digits with at most one point, e or E, a signed integer
+// exponent up to 38; its value sscanf's %g, a float
+std::optional<float> GsExponentNumber(ByteStringView word) {
+  size_t i = 0;
+  const size_t n = word.GetLength();
+  auto digits = [&]() {
+    const size_t start = i;
+    while (i < n && FXSYS_IsDecimalDigit(static_cast<char>(word[i]))) {
+      ++i;
+    }
+    return i - start;
+  };
+  if (i < n && (word[i] == '+' || word[i] == '-')) {
+    ++i;
+  }
+  size_t mantissa = digits();
+  if (i < n && word[i] == '.') {
+    ++i;
+    mantissa += digits();
+  }
+  if (!mantissa || i >= n || (word[i] != 'e' && word[i] != 'E')) {
+    return std::nullopt;
+  }
+  const size_t exponent_start = ++i;
+  if (i < n && (word[i] == '+' || word[i] == '-')) {
+    ++i;
+  }
+  if (!digits() || i != n) {
+    return std::nullopt;
+  }
+  const ByteString text(word);
+  if (strtof(text.c_str() + exponent_start, nullptr) > 38) {
+    return 0.0f;
+  }
+  return strtof(text.c_str(), nullptr);
+}
 
 constexpr int kMaxFormLevel = 40;
 
@@ -601,6 +641,31 @@ void CPDF_StreamContentParser::OnOperator(ByteStringView op) {
   auto it = g_opcodes->find(op.GetID());
   if (it != g_opcodes->end()) {
     (this->*it->second)();
+    return;
+  }
+  // pdfking: an unknown operator of two run together (pdf_int.c
+  // split_bogus_operator: "ETBT"), as gs: a 3, 2 or 1 character operator
+  // then one of what is left, each run (the first takes the operands)
+  const size_t length = op.GetLength();
+  if (length > 6) {
+    return;
+  }
+  for (size_t first : {3u, 2u, 1u}) {
+    if ((first == 3 && length <= 3) ||
+        (first == 2 && (length > 5 || length < 2)) ||
+        (first == 1 && length > 4) || length - first < 1 ||
+        length - first > 3) {
+      continue;
+    }
+    auto op1 = g_opcodes->find(op.First(first).GetID());
+    auto op2 = g_opcodes->find(op.Substr(first).GetID());
+    if (op1 == g_opcodes->end() || op2 == g_opcodes->end()) {
+      continue;
+    }
+    (this->*op1->second)();
+    ClearAllParams();
+    (this->*op2->second)();
+    return;
   }
 }
 
@@ -716,6 +781,7 @@ void CPDF_StreamContentParser::Handle_BeginMarkedContent() {
 }
 
 void CPDF_StreamContentParser::Handle_BeginText() {
+  text_moved_ = true;
   cur_states_->set_text_matrix(CFX_Matrix());
   OnChangeTextMatrix();
   cur_states_->ResetTextPosition();
@@ -1198,6 +1264,7 @@ void CPDF_StreamContentParser::Handle_SetCharSpace() {
 }
 
 void CPDF_StreamContentParser::Handle_MoveTextPoint() {
+  text_moved_ = true;
   cur_states_->MoveTextPoint(GetPoint(0));
 }
 
@@ -1247,12 +1314,20 @@ RetainPtr<CPDF_Font> CPDF_StreamContentParser::FindFont(
   if (!font_dict) {
     return CPDF_Font::GetStockFont(document_, CFX_Font::kDefaultAnsiFontName);
   }
-  RetainPtr<CPDF_Font> font =
-      CPDF_DocPageData::FromDocument(document_)->GetFont(std::move(font_dict));
+  RetainPtr<CPDF_Font> font = LoadFont(std::move(font_dict));
   if (font) {
     // Save `name` for later retrieval by the CPDF_TextObject that uses the
     // font.
     font->SetResourceName(name);
+  }
+  return font;
+}
+
+RetainPtr<CPDF_Font> CPDF_StreamContentParser::LoadFont(
+    RetainPtr<CPDF_Dictionary> font_dict) {
+  RetainPtr<CPDF_Font> font =
+      CPDF_DocPageData::FromDocument(document_)->GetFont(std::move(font_dict));
+  if (font) {
     if (font->IsType3Font()) {
       font->AsType3Font()->SetPageResources(resources_.Get());
       font->AsType3Font()->CheckType3FontMetrics();
@@ -1357,6 +1432,8 @@ void CPDF_StreamContentParser::AddTextObject(
       text_ctm[3] = ctm.d;
     }
     pText->SetSegments(strings, kernings);
+    pText->set_gs_continues(!text_moved_);
+    text_moved_ = false;
     pText->SetPosition(mt_content_to_user_.Transform(
         cur_states_->GetTransformedTextPosition()));
 
@@ -1458,6 +1535,7 @@ void CPDF_StreamContentParser::Handle_SetTextLeading() {
 }
 
 void CPDF_StreamContentParser::Handle_SetTextMatrix() {
+  text_moved_ = true;
   cur_states_->set_text_matrix(GetMatrix());
   OnChangeTextMatrix();
   cur_states_->ResetTextPosition();
@@ -1501,6 +1579,7 @@ void CPDF_StreamContentParser::Handle_SetHorzScale() {
 }
 
 void CPDF_StreamContentParser::Handle_MoveToNextLine() {
+  text_moved_ = true;
   cur_states_->MoveTextToNextLine();
 }
 
@@ -1680,10 +1759,18 @@ uint32_t CPDF_StreamContentParser::Parse(
     switch (syntax_->ParseNextElement()) {
       case CPDF_StreamParser::ElementType::kEndOfData:
         return syntax_->GetPos();
-      case CPDF_StreamParser::ElementType::kKeyword:
-        OnOperator(syntax_->GetWord());
+      case CPDF_StreamParser::ElementType::kKeyword: {
+        // pdfking: a number in exponent form (pdfi_read_num takes it, as a
+        // float)
+        const ByteStringView word = syntax_->GetWord();
+        if (std::optional<float> number = GsExponentNumber(word)) {
+          param_buf_[GetNextParamPos()] = FX_Number(number.value());
+          break;
+        }
+        OnOperator(word);
         ClearAllParams();
         break;
+      }
       case CPDF_StreamParser::ElementType::kNumber:
         AddNumberParam(syntax_->GetWord());
         break;

@@ -17,6 +17,9 @@
 #include "core/fpdfapi/parser/fpdf_parser_utility.h"
 #include "core/fxcrt/fx_extension.h"
 #include "core/fxcrt/fx_safe_types.h"
+#include "core/fxge/cfx_fontmapper.h"
+#include "core/fxge/cfx_fontmgr.h"
+#include "core/fxge/cfx_gemodule.h"
 
 namespace {
 
@@ -157,6 +160,12 @@ void CPDF_ToUnicodeMap::Load(RetainPtr<const CPDF_Stream> pStream) {
       word = HandleBeginBFChar(parser, previous_word);
     } else if (word == "beginbfrange") {
       word = HandleBeginBFRange(parser, previous_word);
+    } else if ((word == "begincidrange" || word == "begincidchar") &&
+               CFX_GEModule::Get()
+                   ->GetFontMgr()
+                   ->GetBuiltinMapper()
+                   ->HasGsFontDir()) {
+      word = HandleBeginCIDRange(parser, word == "begincidchar");
     } else if (word == "/Adobe-Korea1-UCS2") {
       cid_set = CIDSet::kKorea1;
     } else if (word == "/Adobe-Japan1-UCS2") {
@@ -348,6 +357,41 @@ ByteStringView CPDF_ToUnicodeMap::HandleBeginBFRange(
           ++code;
         }
       }
+    }
+  }
+  return word;
+}
+
+// pdfking: a ToUnicode with CID mappings (an Identity-H CMap given as the
+// ToUnicode): gs reads them as any CMap's, each code's value its Unicode
+// (pdfi_read_cmap, pdfi_tounicode_char_to_unicode)
+ByteStringView CPDF_ToUnicodeMap::HandleBeginCIDRange(CPDF_SimpleParser& parser,
+                                                      bool single) {
+  const ByteStringView end = single ? "endcidchar" : "endcidrange";
+  ByteStringView word;
+  while (true) {
+    word = parser.GetWord();
+    if (word.IsEmpty() || word == end) {
+      break;
+    }
+    std::optional<uint32_t> low = StringToCode(word);
+    std::optional<uint32_t> high = low;
+    if (!single) {
+      word = parser.GetWord();
+      high = StringToCode(word);
+    }
+    word = parser.GetWord();
+    const int value = StringToInt(word);
+    if (!low.has_value() || !high.has_value() || low.value() > kCidLimit ||
+        high.value() > kCidLimit || low.value() > high.value() || value < 0) {
+      continue;
+    }
+    for (uint32_t code = low.value(); code <= high.value(); ++code) {
+      const uint32_t unicode = value + (code - low.value());
+      if (unicode > 0xffff) {
+        break;
+      }
+      InsertIntoMaps(code, unicode);
     }
   }
   return word;

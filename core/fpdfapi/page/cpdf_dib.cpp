@@ -42,6 +42,7 @@
 #include "core/fxcrt/check_op.h"
 #include "core/fxcrt/data_vector.h"
 #include "core/fxcrt/fx_2d_size.h"
+#include "core/fxcrt/fx_ceil_div.h"
 #include "core/fxcrt/fx_safe_types.h"
 #include "core/fxcrt/numerics/safe_conversions.h"
 #include "core/fxcrt/span_util.h"
@@ -221,8 +222,10 @@ CPDF_DIB::LoadState CPDF_DIB::StartLoadDIBBase(
     return LoadState::kFail;
   }
 
+  // pdfking: on a plate at full resolution, as gs decodes every sample
   uint8_t resolution_levels_to_skip = 0;
-  if (max_size_required.width != 0 && max_size_required.height != 0) {
+  if (max_size_required.width != 0 && max_size_required.height != 0 &&
+      !GetPlate(document_)) {
     resolution_levels_to_skip = static_cast<uint8_t>(std::log2(
         std::max(1, std::min(GetWidth() / max_size_required.width,
                              GetHeight() / max_size_required.height))));
@@ -682,16 +685,34 @@ RetainPtr<CFX_DIBitmap> CPDF_DIB::LoadJpxBitmap(
   SetWidth(GetWidth() >> resolution_levels_to_skip);
   SetHeight(GetHeight() >> resolution_levels_to_skip);
 
+  // pdfking: on a plate the samples as gs reads them
+  if (GetPlate(document_)) {
+    decoder->UseGsSamples();
+  }
   if (!decoder->StartDecode()) {
     return nullptr;
   }
 
   CJPX_Decoder::JpxImageInfo image_info = decoder->GetInfo();
-  if (static_cast<int>(image_info.width) < GetWidth() ||
-      static_cast<int>(image_info.height) < GetHeight()) {
+  if (!GetPlate(document_) &&
+      (static_cast<int>(image_info.width) < GetWidth() ||
+       static_cast<int>(image_info.height) < GetHeight())) {
     return nullptr;
   }
 
+  // pdfking: on a plate a bare codestream (no JP2 boxes: gs's header scan,
+  // pdf_image.c pdfi_scan_jpxfilter, finds no jp2h and leaves its info 0)
+  // is not drawn with no color space given (EnumCS 0, pdfi_image_get_color)
+  // or with /SMaskInData (its SMask made of 0 bits, pdfi_make_smask_dict)
+  static constexpr uint8_t kJP2Signature[] = {0x00, 0x00, 0x00, 0x0c,
+                                              0x6a, 0x50, 0x20, 0x20};
+  if ((!color_space_ || dict_->GetIntegerFor("SMaskInData") != 0) &&
+      !is_mask_ && GetPlate(document_) &&
+      (stream_acc_->GetSize() < sizeof(kJP2Signature) ||
+       !std::ranges::equal(stream_acc_->GetSpan().first(sizeof(kJP2Signature)),
+                           kJP2Signature))) {
+    return nullptr;
+  }
   // pdfking: with no color space given, on a plate the one the JPX's
   // channels are in, as gs reads it: gray, CMYK or RGB
   if (!color_space_ && !is_mask_ && GetPlate(document_) &&
@@ -704,6 +725,13 @@ RetainPtr<CFX_DIBitmap> CPDF_DIB::LoadJpxBitmap(
                                        : CPDF_ColorSpace::Family::kDeviceCMYK),
         GetPlate(document_), CPDF_Plate::Intent(dict_->GetNameFor("Intent")));
     components_ = color_space_->ComponentCount();
+    // the decoded channels are bytes, the default decode: the palette of a
+    // gray JPX reads them through it
+    comp_data_.resize(components_);
+    for (DIB_COMP_DATA& comp : comp_data_) {
+      comp.decode_min_ = 0.0f;
+      comp.decode_step_ = 1.0f / 255;
+    }
   }
   auto maybe_conversion =
       JpxDecodeConversion::Create(image_info, color_space_.Get());
@@ -712,6 +740,14 @@ RetainPtr<CFX_DIBitmap> CPDF_DIB::LoadJpxBitmap(
   }
 
   const auto& conversion = maybe_conversion.value();
+  // pdfking: on a plate the space the colors are read in (a plate's), kept
+  // when the decode takes them as plain RGB
+  RetainPtr<CPDF_ColorSpace> plate_cs =
+      GetPlate(document_) && color_space_ &&
+              color_space_->GetFamily() != CPDF_ColorSpace::Family::kIndexed &&
+              conversion.convert_argb_to_rgb()
+          ? color_space_
+          : nullptr;
   if (conversion.override_colorspace().has_value()) {
     color_space_ = conversion.override_colorspace().value();
   }
@@ -727,6 +763,21 @@ RetainPtr<CFX_DIBitmap> CPDF_DIB::LoadJpxBitmap(
     DCHECK_NE(0u, components_);
   }
 
+  // pdfking: on a plate, a JPX of other than its space's components or the
+  // image's size is read as gs reads it (sjpx_openjpeg.c): its samples one
+  // stream of bytes, `channels` a pixel, its width a row, the image taking
+  // them `components_` a pixel, GetWidth() a row; rows past the end of the
+  // data left 0
+  const uint32_t jpx_width = image_info.width;
+  const uint32_t jpx_height = image_info.height;
+  const uint32_t jpx_channels =
+      GetPlate(document_) ? decoder->GsChannels() : image_info.channels;
+  const bool restream = GetPlate(document_) && color_space_ &&
+                        !conversion.override_colorspace().has_value() &&
+                        !conversion.swap_rgb() &&
+                        (components_ != jpx_channels ||
+                         static_cast<int>(jpx_width) != GetWidth() ||
+                         static_cast<int>(jpx_height) != GetHeight());
   image_info.width = conversion.width();
 
   auto result_bitmap = pdfium::MakeRetain<CFX_DIBitmap>();
@@ -738,8 +789,29 @@ RetainPtr<CFX_DIBitmap> CPDF_DIB::LoadJpxBitmap(
   result_bitmap->Clear(0xFFFFFFFF);
   if (!decoder->Decode(result_bitmap->GetWritableBuffer(),
                        result_bitmap->GetPitch(), conversion.swap_rgb(),
-                       components_)) {
+                       restream ? jpx_channels : components_)) {
     return nullptr;
+  }
+  if (restream) {
+    auto stream = pdfium::MakeRetain<CFX_DIBitmap>();
+    if (!stream->Create(fxcrt::CeilDiv(GetWidth() * components_, 3),
+                        GetHeight(), FXDIB_Format::kBgr)) {
+      return nullptr;
+    }
+    stream->Clear(0);
+    const size_t in_row = static_cast<size_t>(jpx_width) * jpx_channels;
+    const size_t out_row = static_cast<size_t>(GetWidth()) * components_;
+    for (size_t b = 0; b < in_row * jpx_height; ++b) {
+      const size_t row = b / out_row;
+      if (row >= static_cast<size_t>(GetHeight())) {
+        break;
+      }
+      stream->GetWritableScanline(static_cast<int>(row))[b % out_row] =
+          result_bitmap->GetScanline(static_cast<int>(b / in_row))[b % in_row];
+    }
+    image_info.width = stream->GetWidth();
+    image_info.height = stream->GetHeight();
+    result_bitmap = std::move(stream);
   }
 
   if (conversion.convert_argb_to_rgb()) {
@@ -747,6 +819,22 @@ RetainPtr<CFX_DIBitmap> CPDF_DIB::LoadJpxBitmap(
                                               image_info.height);
     if (!result_bitmap) {
       return nullptr;
+    }
+    if (plate_cs) {
+      // each pixel's RGB to the plate's gray
+      for (uint32_t row = 0; row < image_info.height; ++row) {
+        auto line = result_bitmap->GetWritableScanlineAs<FX_BGR_STRUCT<uint8_t>>(
+            row);
+        for (auto& px : line.first(image_info.width)) {
+          const std::array<float, 3> rgb = {px.red / 255.0f, px.green / 255.0f,
+                                            px.blue / 255.0f};
+          const FX_RGB_STRUCT<float> gray =
+              plate_cs->GetRGBOrZerosOnError(rgb);
+          px.red = px.green = px.blue =
+              static_cast<uint8_t>(gray.red * 255.0f);
+        }
+      }
+      color_space_ = plate_cs;
     }
   } else if (color_space_ &&
              color_space_->GetFamily() == CPDF_ColorSpace::Family::kIndexed &&
@@ -777,10 +865,17 @@ RetainPtr<CFX_DIBitmap> CPDF_DIB::ConvertArgbJpxBitmapToRgb(
   if (!rgb_bitmap->Create(width, height, FXDIB_Format::kBgr)) {
     return nullptr;
   }
-  if (dict_->GetIntegerFor("SMaskInData") == 1) {
+  const int smask_in_data = dict_->GetIntegerFor("SMaskInData");
+  if (smask_in_data == 1 || smask_in_data == 2) {
     // TODO(thestig): Acrobat does not support "/SMaskInData 1" combined with
     // filters. Check for that and fail early.
     DCHECK(jpx_inline_data_.data.empty());
+    // the color premultiplied (2) against the image's /Matte, else black
+    std::array<float, 3> matte = {0, 0, 0};
+    RetainPtr<const CPDF_Array> matte_array = dict_->GetArrayFor("Matte");
+    for (size_t i = 0; matte_array && i < 3 && i < matte_array->size(); ++i) {
+      matte[i] = matte_array->GetFloatAt(i);
+    }
     jpx_inline_data_.width = width;
     jpx_inline_data_.height = height;
     jpx_inline_data_.data.reserve(Fx2DSizeOrDie(width, height));
@@ -795,11 +890,21 @@ RetainPtr<CFX_DIBitmap> CPDF_DIB::ConvertArgbJpxBitmapToRgb(
         const uint8_t green = input.green;
         const uint8_t red = input.red;
         const uint8_t alpha = input.alpha;
-        const uint8_t na = 255 - alpha;
         jpx_inline_data_.data.push_back(alpha);
-        output.blue = (blue * alpha + 255 * na) / 255;
-        output.green = (green * alpha + 255 * na) / 255;
-        output.red = (red * alpha + 255 * na) / 255;
+        // pdfking: the color as it is, the alpha its soft mask (it was
+        // also blended over white: the alpha twice); premultiplied (2)
+        // divided back, as gs takes them
+        auto straight = [&](uint8_t c, int i) -> uint8_t {
+          if (smask_in_data == 1 || alpha == 0 || alpha == 255) {
+            return c;
+          }
+          const float m = matte[i] * 255;
+          return static_cast<uint8_t>(
+              std::clamp(m + (c - m) * 255 / alpha, 0.0f, 255.0f) + 0.5f);
+        };
+        output.blue = straight(blue, 2);
+        output.green = straight(green, 1);
+        output.red = straight(red, 0);
       }
     }
     return rgb_bitmap;

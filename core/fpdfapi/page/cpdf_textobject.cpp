@@ -136,6 +136,8 @@ std::unique_ptr<CPDF_TextObject> CPDF_TextObject::Clone() const {
   obj->char_codes_ = char_codes_;
   obj->char_kernings_ = char_kernings_;
   obj->char_positions_ = char_positions_;
+  obj->advance_ = advance_;
+  obj->gs_continues_ = gs_continues_;
   obj->pos_ = pos_;
   return obj;
 }
@@ -356,5 +358,6 @@ float CPDF_TextObject::CalcPositionDataInternal(
   }
   SetRect(rect);
 
+  advance_ = current_position;
   return current_position;
 }

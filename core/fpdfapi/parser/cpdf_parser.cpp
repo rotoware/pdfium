@@ -766,6 +766,7 @@ bool CPDF_Parser::RebuildCrossRef() {
   syntax_->SetPos(0);
 
   std::vector<std::pair<uint32_t, FX_FILESIZE>> numbers;
+  uint32_t catalog_obj_num = CPDF_Object::kInvalidObjNum;
   for (CPDF_SyntaxParser::WordResult result = syntax_->GetNextWord();
        !result.word.IsEmpty(); result = syntax_->GetNextWord()) {
     const ByteString& word = result.word;
@@ -803,8 +804,16 @@ bool CPDF_Parser::RebuildCrossRef() {
       const uint32_t gen_num = numbers[1].first;
 
       syntax_->SetPos(obj_pos);
-      RetainPtr<CPDF_Stream> pStream = ToStream(syntax_->GetIndirectObject(
-          nullptr, CPDF_SyntaxParser::ParseType::kStrict));
+      RetainPtr<CPDF_Object> object = syntax_->GetIndirectObject(
+          nullptr, CPDF_SyntaxParser::ParseType::kStrict);
+      // pdfking: the last catalog, a root when no trailer gives one (as gs's
+      // pdfi_repair_file takes it)
+      if (const CPDF_Dictionary* dict = object ? object->AsDictionary()
+                                               : nullptr;
+          dict && dict->GetNameFor("Type") == "Catalog") {
+        catalog_obj_num = obj_num;
+      }
+      RetainPtr<CPDF_Stream> pStream = ToStream(std::move(object));
 
       if (pStream && pStream->GetDict()->GetNameFor("Type") == "XRef") {
         cross_ref_table = CPDF_CrossRefTable::MergeUp(
@@ -830,6 +839,17 @@ bool CPDF_Parser::RebuildCrossRef() {
     numbers.clear();
   }
 
+  if ((!cross_ref_table->trailer() ||
+       !cross_ref_table->trailer()->KeyExist("Root")) &&
+      catalog_obj_num != CPDF_Object::kInvalidObjNum) {
+    auto trailer = pdfium::MakeRetain<CPDF_Dictionary>();
+    trailer->SetNewFor<CPDF_Reference>("Root", objects_holder_.Get(),
+                                       catalog_obj_num);
+    cross_ref_table = CPDF_CrossRefTable::MergeUp(
+        std::move(cross_ref_table),
+        std::make_unique<CPDF_CrossRefTable>(std::move(trailer),
+                                             CPDF_Object::kInvalidObjNum));
+  }
   cross_ref_table_ = CPDF_CrossRefTable::MergeUp(std::move(cross_ref_table_),
                                                  std::move(cross_ref_table));
   // Resore default buffer size.

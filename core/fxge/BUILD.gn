@@ -24,6 +24,8 @@ source_set("fxge") {
     "cfx_drawutils.h",
     "cfx_face.cpp",
     "cfx_face.h",
+    "cfx_face_gs.cpp",  # pdfking
+    "cfx_face_gs.h",  # pdfking
     "cfx_fillrenderoptions.h",
     "cfx_folderfontinfo.cpp",
     "cfx_folderfontinfo.h",
@@ -39,6 +41,8 @@ source_set("fxge") {
     "cfx_glyphbitmap.h",
     "cfx_glyphcache.cpp",
     "cfx_glyphcache.h",
+    "cfx_gsfonts.cpp",  # pdfking
+    "cfx_gsfonts.h",  # pdfking
     "cfx_graphstate.cpp",
     "cfx_graphstate.h",
     "cfx_graphstatedata.cpp",
@@ -47,6 +51,8 @@ source_set("fxge") {
     "cfx_path.h",
     "cfx_renderdevice.cpp",
     "cfx_renderdevice.h",
+    "cfx_renderdevice_gs.cpp",  # pdfking
+    "cfx_renderdevice_gs.h",  # pdfking
     "cfx_standardfont.cpp",
     "cfx_standardfont.h",
     "cfx_substfont.cpp",
@@ -97,6 +103,15 @@ source_set("fxge") {
     "fx_font.cpp",
     "fx_font.h",
     "fx_fontencoding.h",
+    "gs_image.cpp",
+    "gs_image.h",
+    "gs_scanconvert.cpp",
+    "gs_scanconvert.h",
+    "gs_shade.cpp",
+    "gs_shade.h",
+    "gs_shade_dtfill.inc",
+    "gs_stroke.cpp",
+    "gs_stroke.h",
     "renderdevicedriver_iface.cpp",
     "renderdevicedriver_iface.h",
     "systemfontinfo_iface.h",
@@ -203,6 +218,7 @@ source_set("fxge") {
       "agg/cfx_agg_cliprgn.h",
       "agg/cfx_agg_devicedriver.cpp",
       "agg/cfx_agg_devicedriver.h",
+      "agg/cfx_agg_devicedriver_gs.cpp",  # pdfking
       "agg/cfx_agg_imagerenderer.cpp",
       "agg/cfx_agg_imagerenderer.h",
     ]

@@ -17,6 +17,8 @@
 #include "core/fpdfapi/page/cpdf_colorspace.h"
 #include "core/fpdfapi/page/cpdf_dib.h"
 #include "core/fpdfapi/page/cpdf_function.h"
+#include "core/fpdfapi/page/cpdf_inks.h"
+#include "core/fpdfapi/render/cpdf_gsshading.h"
 #include "core/fpdfapi/page/cpdf_meshstream.h"
 #include "core/fpdfapi/page/cpdf_plate.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
@@ -1020,6 +1022,7 @@ void CPDF_RenderShading::Draw(CFX_RenderDevice* pDevice,
                               const CPDF_ShadingPattern* pPattern,
                               const CFX_Matrix& mtMatrix,
                               const FX_RECT& clip_rect,
+                              const FX_RECT& shape_rect,
                               int alpha,
                               const CPDF_RenderOptions& options) {
   RetainPtr<CPDF_ColorSpace> pColorSpace = pPattern->GetCS();
@@ -1028,14 +1031,16 @@ void CPDF_RenderShading::Draw(CFX_RenderDevice* pDevice,
   }
   // pdfking: on a plate, the shading in its gray; an overprinting one in
   // inks off the plate leaves it as it was
-  if (const CPDF_Plate* plate = GetPlate(context->GetDocument())) {
+  const CPDF_Plate* plate = GetPlate(context->GetDocument());
+  const RetainPtr<CPDF_ColorSpace> shading_cs = pColorSpace;
+  const int intent =
+      pCurObj ? pCurObj->general_state().GetRenderIntent() : 0;
+  if (plate) {
     if (pCurObj && pCurObj->general_state().GetFillOP() &&
         !plate->Marks(pColorSpace.Get())) {
       return;
     }
-    pColorSpace = PlateColorSpace(
-        std::move(pColorSpace), plate,
-        pCurObj ? pCurObj->general_state().GetRenderIntent() : 0);
+    pColorSpace = PlateColorSpace(std::move(pColorSpace), plate, intent);
   }
 
   FX_ARGB background = 0;
@@ -1058,6 +1063,11 @@ void CPDF_RenderShading::Draw(CFX_RenderDevice* pDevice,
     clip_rect_bbox.Intersect(
         mtMatrix.TransformRect(dict->GetRectFor("BBox")).GetOuterRect());
   }
+  FX_RECT gs_box = shape_rect;
+  if (dict->KeyExist("BBox")) {
+    gs_box.Intersect(
+        mtMatrix.TransformRect(dict->GetRectFor("BBox")).GetOuterRect());
+  }
 #if defined(PDF_USE_SKIA)
   if (pDevice->RenderCapShading() &&
       pDevice->DrawShading(*pPattern, mtMatrix, clip_rect_bbox, alpha)) {
@@ -1075,6 +1085,14 @@ void CPDF_RenderShading::Draw(CFX_RenderDevice* pDevice,
   }
   const CFX_Matrix final_matrix = mtMatrix * buffer.GetMatrix();
   const auto& funcs = pPattern->GetFuncs();
+  // pdfking: on inks, the types gs fills from a function as gs does
+  const CPDF_Inks* inks = GetGsInks(context->GetDocument());
+  if (inks && GsFillsShading(pPattern)) {
+    DrawGsShading(pBitmap, clip_rect_bbox, gs_box, mtMatrix, pPattern,
+                  dict.Get(), shading_cs, inks, plate, intent, alpha);
+    buffer.OutputToDevice();
+    return;
+  }
   switch (pPattern->GetShadingType()) {
     case kInvalidShading:
     case kMaxShading:

@@ -201,7 +201,16 @@ bool CPDF_SecurityHandler::CheckSecurity(const ByteString& password) {
     owner_unlocked_ = true;
     return true;
   }
-  return CheckPassword(password, false);
+  if (CheckPassword(password, false)) {
+    return true;
+  }
+  // pdfking: no password: the empty one as the owner's too, as gs tries it
+  // (pdf_sec.c)
+  if (password.IsEmpty() && CheckPassword(password, true)) {
+    owner_unlocked_ = true;
+    return true;
+  }
+  return false;
 }
 
 uint32_t CPDF_SecurityHandler::GetPermissions(bool get_owner_perms) const {

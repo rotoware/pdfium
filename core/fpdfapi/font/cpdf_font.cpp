@@ -31,6 +31,9 @@
 #include "core/fxcrt/fx_codepage.h"
 #include "core/fxcrt/fx_safe_types.h"
 #include "core/fxcrt/stl_util.h"
+#include "core/fxge/cfx_fontmapper.h"
+#include "core/fxge/cfx_fontmgr.h"
+#include "core/fxge/cfx_gemodule.h"
 #include "core/fxge/cfx_standardfont.h"
 #include "core/fxge/cfx_substfont.h"
 #include "core/fxge/fx_font.h"
@@ -45,6 +48,75 @@ constexpr std::array<const char*, 5> kChineseFontNames = {{
     "\xB7\xC2\xCB\xCE",
     "\xD0\xC2\xCB\xCE",
 }};
+
+// pdfking: whether gs takes an embedded TrueType (gstype42.c
+// gs_type42_font_init, ported from Ghostscript 10.08, AGPL): every fixed
+// size read it makes in reach of the data (pdfi_ttf_string_proc makes one
+// past the end an invalidfont, and pdfi substitutes the font); data not
+// TrueType by its tag left alone
+bool GsTakesTrueType(pdfium::span<const uint8_t> sfnt) {
+  auto fits = [&sfnt](uint64_t offset, uint64_t length) {
+    return offset + length <= sfnt.size();
+  };
+  auto u16 = [&sfnt](size_t at) { return (sfnt[at] << 8) | sfnt[at + 1]; };
+  auto u32 = [&sfnt](size_t at) {
+    return (static_cast<uint32_t>(sfnt[at]) << 24) | (sfnt[at + 1] << 16) |
+           (sfnt[at + 2] << 8) | sfnt[at + 3];
+  };
+  auto tag = [&sfnt](size_t at, const char* name) {
+    return memcmp(&sfnt[at], name, 4) == 0;
+  };
+  if (!fits(0, 12)) {
+    return true;
+  }
+  size_t table = 0;
+  if (tag(0, "ttcf")) {
+    const uint32_t version = u32(4);
+    if ((version != 0x00010000 && version != 0x00020000) || u32(8) < 1 ||
+        !fits(12, 4)) {
+      return false;
+    }
+    table = u32(12);
+    if (!fits(table, 12)) {
+      return false;
+    }
+  } else if (u32(0) != 0x00010000 && !tag(0, "true")) {
+    return true;
+  }
+  if (u32(table) != 0x00010000 && !tag(table, "true")) {
+    return false;
+  }
+  constexpr uint32_t kMaxTables = 40;  // MAX_NUM_TT_TABLES
+  const uint32_t tables = u16(table + 4);
+  if (tables > kMaxTables || !fits(table + 12, tables * 16)) {
+    return false;
+  }
+  bool gsub = false;
+  for (uint32_t i = 0; i < tables; ++i) {
+    const size_t entry = table + 12 + i * 16;
+    const uint32_t offset = u32(entry + 8);
+    uint64_t read = 0;
+    if (tag(entry, "post")) {
+      read = 4;
+    } else if (tag(entry, "GSUB")) {
+      if (gsub) {
+        return false;
+      }
+      gsub = true;
+      read = u32(entry + 12);
+    } else if (tag(entry, "head")) {
+      read = 54;
+    } else if (tag(entry, "hhea") || tag(entry, "vhea")) {
+      read = 36;
+    } else if (tag(entry, "maxp")) {
+      read = 30;
+    }
+    if (read && !fits(offset, read)) {
+      return false;
+    }
+  }
+  return true;
+}
 
 }  // namespace
 
@@ -174,8 +246,10 @@ void CPDF_Font::LoadFontDescriptor(const CPDF_Dictionary* font_desc) {
   }
 
   RetainPtr<const CPDF_Stream> font_file = font_desc->GetStreamFor("FontFile");
+  bool truetype_file = false;
   if (!font_file) {
     font_file = font_desc->GetStreamFor("FontFile2");
+    truetype_file = !!font_file;
   }
   if (!font_file) {
     font_file = font_desc->GetStreamFor("FontFile3");
@@ -187,6 +261,13 @@ void CPDF_Font::LoadFontDescriptor(const CPDF_Dictionary* font_desc) {
   const uint64_t key = font_file->KeyForCache();
   font_file_ = document_->GetFontFileStreamAcc(std::move(font_file));
   if (!font_file_) {
+    return;
+  }
+  // pdfking: a TrueType gs rejects, substituted as gs does
+  if (truetype_file &&
+      CFX_GEModule::Get()->GetFontMgr()->GetBuiltinMapper()->HasGsFontDir() &&
+      !GsTakesTrueType(font_file_->GetSpan())) {
+    document_->MaybePurgeFontFileStreamAcc(std::move(font_file_));
     return;
   }
 
@@ -241,6 +322,10 @@ bool CPDF_Font::ShouldApplyGlyphSpacingHeuristic(
     const CFX_Font* current_font,
     bool is_vertical_writing) const {
   if (is_vertical_writing || IsEmbedded() || !HasFontWidths()) {
+    return false;
+  }
+  // pdfking: gs draws a substituted glyph as the font has it
+  if (CFX_GEModule::Get()->GetFontMgr()->GetBuiltinMapper()->HasGsFontDir()) {
     return false;
   }
 
@@ -316,9 +401,15 @@ RetainPtr<CPDF_Font> CPDF_Font::Create(CPDF_Document* doc,
                                        FormFactoryIface* pFactory) {
   ByteString type = font_dict->GetByteStringFor("Subtype");
   RetainPtr<CPDF_Font> font;
+  // pdfking: gs takes a Chinese-named TrueType as the simple font it is
+  const bool gs_fonts =
+      CFX_GEModule::Get()->GetFontMgr()->GetBuiltinMapper()->HasGsFontDir();
   if (type == "TrueType") {
     ByteString tag = font_dict->GetByteStringFor("BaseFont").First(4);
     for (const char* chinese_font_name : kChineseFontNames) {
+      if (gs_fonts) {
+        break;
+      }
       if (tag == chinese_font_name) {
         RetainPtr<const CPDF_Dictionary> font_desc =
             font_dict->GetDictFor("FontDescriptor");

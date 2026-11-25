@@ -66,6 +66,8 @@ class CPDF_StreamContentParser {
   bool IsColored() const { return colored_; }
   pdfium::span<const float, 6> GetType3Data() const { return type3_data_; }
   RetainPtr<CPDF_Font> FindFont(const ByteString& name);
+  // pdfking: an ExtGState /Font's font, given by its dictionary
+  RetainPtr<CPDF_Font> LoadFont(RetainPtr<CPDF_Dictionary> font_dict);
   CPDF_PageObjectHolder::CTMMap TakeAllCTMs();
 
   static ByteStringView FindKeyAbbreviationForTesting(ByteStringView abbr);
@@ -230,6 +232,8 @@ class CPDF_StreamContentParser {
   ByteString last_image_name_;
   RetainPtr<CPDF_Image> last_image_;
   bool colored_ = false;
+  // pdfking: a text positioning operator since the last show
+  bool text_moved_ = true;
   std::vector<std::unique_ptr<CPDF_AllStates>> state_stack_;
   std::array<float, 6> type3_data_ = {};
   std::array<ContentParam, kParamBufSize> param_buf_;

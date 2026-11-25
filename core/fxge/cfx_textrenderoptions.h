@@ -5,6 +5,8 @@
 #ifndef CORE_FXGE_CFX_TEXTRENDEROPTIONS_H_
 #define CORE_FXGE_CFX_TEXTRENDEROPTIONS_H_
 
+#include "core/fxcrt/fx_coordinates.h"
+
 struct CFX_TextRenderOptions {
   // AliasingType defines the options for drawing pixels on the edges of the
   // text. The values are defined in an incrementing order due to the latter
@@ -43,6 +45,21 @@ struct CFX_TextRenderOptions {
 
   // Using the native text output available on some platforms.
   bool native_text = true;
+
+  // pdfking: aliased glyphs as gs renders them at this device resolution
+  // (its size in points through FreeType, fapi_ft.c); 0: pdfium's own
+  float gs_dpi = 0;
+  // pdfking: glyphs filled as outlines, as gs draws text on a page with
+  // transparency (its pdf14 device)
+  bool gs_outline = false;
+
+  // pdfking: where the page's top left is on the device (a band's render is
+  // offset): gs places an uncached glyph by its page coordinates
+  CFX_PointF gs_page_origin;
+  // pdfking: the glyph origins are gs's current points already (the caller
+  // followed gs's advances); otherwise each advance is taken as gs takes a
+  // glyph's width
+  bool gs_positioned = false;
 };
 
 #endif  // CORE_FXGE_CFX_TEXTRENDEROPTIONS_H_

@@ -119,6 +119,7 @@ source_set("fxcodec") {
     "jpeg/jpegmodule.h",
     "jpx/cjpx_decoder.cpp",
     "jpx/cjpx_decoder.h",
+    "jpx/cjpx_decoder_gs.cpp",  # pdfking
     "jpx/jpx_decode_utils.cpp",
     "jpx/jpx_decode_utils.h",
     "scanlinedecoder.cpp",

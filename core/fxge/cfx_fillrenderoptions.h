@@ -63,6 +63,17 @@ struct CFX_FillRenderOptions {
   // Path is text.
   bool text_mode : 1 = false;
 
+  // pdfking: filled and stroked as gs does (its scan converter, any part of
+  // a pixel, and its stroker)
+  bool gs : 1 = false;
+
+  // pdfking: with gs, the path is in device space already (gs's own fixed
+  // point outline); the matrix only gives the stroke's line width and dashes
+  bool gs_device_path : 1 = false;
+
+  // pdfking: with gs, text glyph origins already at gs's current point
+  bool gs_positioned : 1 = false;
+
   // Path encloses zero area.
   bool zero_area : 1 = false;
 };

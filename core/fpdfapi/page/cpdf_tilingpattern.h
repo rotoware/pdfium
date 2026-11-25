@@ -32,6 +32,8 @@ class CPDF_TilingPattern final : public CPDF_Pattern {
   const CFX_FloatRect& bbox() const { return bbox_; }
   float x_step() const { return xstep_; }
   float y_step() const { return ystep_; }
+  // pdfking: /TilingType (1, 2 or 3)
+  int tiling_type() const { return tiling_type_; }
 
  private:
   CPDF_TilingPattern(CPDF_Document* doc,
@@ -44,6 +46,7 @@ class CPDF_TilingPattern final : public CPDF_Pattern {
   CFX_FloatRect bbox_;
   float xstep_ = 0.0f;
   float ystep_ = 0.0f;
+  int tiling_type_ = 1;
 };
 
 #endif  // CORE_FPDFAPI_PAGE_CPDF_TILINGPATTERN_H_

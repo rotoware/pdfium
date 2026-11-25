@@ -96,6 +96,26 @@ class CPDF_DocPageData final : public CPDF_Document::PageDataIface,
   // pdfking: the inks pages render to at once, null for color
   void SetInks(RetainPtr<CPDF_Inks> inks) { inks_ = std::move(inks); }
   CPDF_Inks* GetInks() const { return inks_.Get(); }
+  // pdfking: the inks of the ink render a color render inside it
+  // (ScopedColorRender) is for, null outside one
+  void SetColorRenderInks(RetainPtr<CPDF_Inks> inks) {
+    color_render_inks_ = std::move(inks);
+  }
+  CPDF_Inks* GetColorRenderInks() const { return color_render_inks_.Get(); }
+  // pdfking: the RGB, CMYK and gray profiles a group blending in RGB or
+  // gray goes to the plates through (gs's default_rgb.icc, default_cmyk.icc,
+  // default_gray.icc); none: the page blends on the plates whatever its
+  // group says
+  void SetBlendProfiles(DataVector<uint8_t> rgb,
+                        DataVector<uint8_t> cmyk,
+                        DataVector<uint8_t> gray) {
+    blend_rgb_ = std::move(rgb);
+    blend_cmyk_ = std::move(cmyk);
+    blend_gray_ = std::move(gray);
+  }
+  const DataVector<uint8_t>& blend_rgb() const { return blend_rgb_; }
+  const DataVector<uint8_t>& blend_cmyk() const { return blend_cmyk_; }
+  const DataVector<uint8_t>& blend_gray() const { return blend_gray_; }
 
  private:
   struct HashIccProfileKey {
@@ -130,6 +150,10 @@ class CPDF_DocPageData final : public CPDF_Document::PageDataIface,
   bool force_clear_ = false;
   RetainPtr<const CPDF_Plate> plate_;  // pdfking
   RetainPtr<CPDF_Inks> inks_;          // pdfking
+  RetainPtr<CPDF_Inks> color_render_inks_;  // pdfking
+  DataVector<uint8_t> blend_rgb_;      // pdfking
+  DataVector<uint8_t> blend_cmyk_;     // pdfking
+  DataVector<uint8_t> blend_gray_;     // pdfking
 
   // Specific destruction order may be required between maps.
   std::map<HashIccProfileKey, RetainPtr<const CPDF_Stream>>

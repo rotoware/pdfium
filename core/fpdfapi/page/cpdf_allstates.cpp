@@ -85,8 +85,12 @@ void CPDF_AllStates::ProcessExtGS(const CPDF_Dictionary* pGS,
         }
 
         mutable_text_state().SetFontSize(font->GetFloatAt(1));
+        // pdfking: the font is its dictionary (ISO 32000 8.4.5), not a name
+        RetainPtr<CPDF_Dictionary> font_dict = pdfium::WrapRetain(
+            const_cast<CPDF_Dictionary*>(font->GetDictAt(0).Get()));
         mutable_text_state().SetFont(
-            pParser->FindFont(font->GetByteStringAt(0)));
+            font_dict ? pParser->LoadFont(std::move(font_dict))
+                      : pParser->FindFont(font->GetByteStringAt(0)));
         break;
       }
       case FXBSTR_ID('T', 'R', 0, 0):

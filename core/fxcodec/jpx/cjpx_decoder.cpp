@@ -544,10 +544,11 @@ bool CJPX_Decoder::StartDecode() {
 
   stream_.reset();
   auto components = components_span(image_.get());
-  if (image_->color_space != OPJ_CLRSPC_SYCC && components.size() == 3 &&
-      components[0].dx == components[0].dy && components[1].dx != 1) {
+  if (!gs_samples_ && image_->color_space != OPJ_CLRSPC_SYCC &&
+      components.size() == 3 && components[0].dx == components[0].dy &&
+      components[1].dx != 1) {
     image_->color_space = OPJ_CLRSPC_SYCC;
-  } else if (image_->numcomps <= 2) {
+  } else if (!gs_samples_ && image_->numcomps <= 2) {
     image_->color_space = OPJ_CLRSPC_GRAY;
   }
   if (image_->color_space == OPJ_CLRSPC_SYCC) {
@@ -574,6 +575,16 @@ bool CJPX_Decoder::StartDecode() {
 
 CJPX_Decoder::JpxImageInfo CJPX_Decoder::GetInfo() const {
   const auto components = components_span(image_.get());
+  if (gs_samples_) {
+    uint32_t width = 0;
+    uint32_t height = 0;
+    for (const opj_image_comp_t& comp : components) {
+      width = std::max(width, comp.w);
+      height = std::max(height, comp.h);
+    }
+    return {width, height, pdfium::checked_cast<uint32_t>(components.size()),
+            image_->color_space};
+  }
   return {components[0].w, components[0].h,
           pdfium::checked_cast<uint32_t>(components.size()),
           image_->color_space};
@@ -583,6 +594,9 @@ bool CJPX_Decoder::Decode(pdfium::span<uint8_t> dest_buf,
                           uint32_t pitch,
                           bool swap_rgb,
                           uint32_t component_count) {
+  if (gs_samples_) {
+    return DecodeGs(dest_buf, pitch, swap_rgb, component_count);
+  }
   CHECK_LE(component_count, image_->numcomps);
   uint32_t channel_count = component_count;
   if (channel_count == 3 && image_->numcomps == 4) {

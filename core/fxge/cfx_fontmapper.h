@@ -23,6 +23,7 @@
 #include "core/fxcrt/observed_ptr.h"
 #include "core/fxcrt/retain_ptr.h"
 #include "core/fxge/cfx_face.h"
+#include "core/fxge/cfx_gsfonts.h"  // pdfking
 #include "core/fxge/cfx_standardfont.h"
 
 class CFX_SubstFont;
@@ -70,6 +71,11 @@ class CFX_FontMapper {
                                     FX_CodePage code_page,
                                     CFX_SubstFont* subst_font);
 
+  // pdfking: fonts not embedded found as gs finds them, in gs's resources
+  // at `dir`; empty for pdfium's own substitution (CFX_GsFonts).
+  void SetGsFontDir(const ByteString& dir) { gs_fonts_.SetDir(dir); }
+  bool HasGsFontDir() const { return gs_fonts_.HasDir(); }
+
   size_t GetFaceSize() const;
   // `index` must be less than GetFaceSize().
   ByteString GetFaceName(size_t index) const;
@@ -90,6 +96,8 @@ class CFX_FontMapper {
 
  private:
   friend class TestFontMapper;
+
+  CFX_GsFonts gs_fonts_;  // pdfking
 
   ByteString GetPSNameFromTT(void* font_handle);
   ByteString MatchInstalledFonts(const ByteString& norm_name);

@@ -107,6 +107,16 @@ class CFX_AggDeviceDriver final : public RenderDeviceDriverIface {
   bool MultiplyAlphaMask(RetainPtr<const CFX_DIBitmap> mask) override;
 
  private:
+  void SetClipAsGs(const CFX_Path& path,
+                   const CFX_Matrix& matrix,
+                   const CFX_FillRenderOptions& fill_options);
+  bool DrawPathAsGs(const CFX_Path& path,
+                    const CFX_Matrix& matrix,
+                    const CFX_GraphStateData* pGraphState,
+                    uint32_t fill_color,
+                    uint32_t stroke_color,
+                    bool group_knockout,
+                    const CFX_FillRenderOptions& fill_options);
   void RenderRasterizer(pdfium::agg::rasterizer_scanline_aa& rasterizer,
                         uint32_t color,
                         bool bFullCover,

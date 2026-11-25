@@ -53,14 +53,16 @@ class CFX_GlyphCache final : public Retainable, public Observable {
   // <glyph_index, dest_width, weight>
   using WidthMapKey = std::tuple<uint32_t, int, int>;
 
-  std::unique_ptr<CFX_GlyphBitmap> RenderGlyph(uint32_t glyph_index,
+  std::unique_ptr<CFX_GlyphBitmap> RenderGlyph(float gs_dpi,
+                                               uint32_t glyph_index,
                                                bool is_cid_font,
                                                bool is_vertical,
                                                const CFX_Matrix& matrix,
                                                int dest_width,
                                                FontAntiAliasingMode anti_alias,
                                                const CFX_SubstFont* subst_font);
-  CFX_GlyphBitmap* LookUpGlyphBitmap(const CFX_Font* font,
+  CFX_GlyphBitmap* LookUpGlyphBitmap(float gs_dpi,
+                                     const CFX_Font* font,
                                      const CFX_Matrix& matrix,
                                      const ByteString& FaceGlyphsKey,
                                      uint32_t glyph_index,

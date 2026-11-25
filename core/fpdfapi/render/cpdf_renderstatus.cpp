@@ -458,11 +458,18 @@ bool CPDF_RenderStatus::ProcessPath(CPDF_PathObject* path_obj,
     return true;
   }
 
-  return device_->DrawPath(
-      *path_obj->path().GetObject(), &path_matrix,
-      path_obj->graph_state().GetObject(), fill_argb, stroke_argb,
-      GetFillOptionsForDrawPathWithBlend(options, path_obj, fill_type, stroke,
-                                         type3_char_));
+  CFX_FillRenderOptions fill_options = GetFillOptionsForDrawPathWithBlend(
+      options, path_obj, fill_type, stroke, type3_char_);
+  // pdfking: on inks, filled and stroked as gs does
+  // (stroke adjust on below 150 dpi, gs's default, or with /SA true)
+  if (CPDF_Inks* inks = GetGsInks(context_->GetDocument());
+      inks && fill_options.aliased_path) {
+    fill_options.gs = true;
+    fill_options.adjust_stroke |= inks->dpi() < 150;
+  }
+  return device_->DrawPath(*path_obj->path().GetObject(), &path_matrix,
+                           path_obj->graph_state().GetObject(), fill_argb,
+                           stroke_argb, fill_options);
 }
 
 RetainPtr<CPDF_TransferFunc> CPDF_RenderStatus::GetTransferFunc(
@@ -578,6 +585,8 @@ void CPDF_RenderStatus::ProcessClipPath(const CPDF_ClipPath& ClipPath,
       CFX_FillRenderOptions fill_options(ClipPath.GetClipType(i));
       // pdfking: aliased as fills are, the pixels a fill of it inks
       fill_options.aliased_path = options_.GetOptions().bNoPathSmooth;
+      fill_options.gs =
+          fill_options.aliased_path && GetGsInks(context_->GetDocument());
       device_->SetClip_PathFill(*pPath, &mtObj2Device, fill_options);
     }
   }
@@ -608,6 +617,12 @@ void CPDF_RenderStatus::ProcessClipPath(const CPDF_ClipPath& ClipPath,
     CFX_FillRenderOptions fill_options(CFX_FillRenderOptions::WindingOptions());
     if (options_.GetOptions().bNoTextSmooth) {
       fill_options.aliased_path = true;
+    }
+    // pdfking: on inks, gs's text clip: its glyph outlines, fill adjust 0
+    // (pdfi's do_ET)
+    if (fill_options.aliased_path && GetInks(context_->GetDocument())) {
+      fill_options.gs = true;
+      fill_options.text_mode = true;
     }
     device_->SetClip_PathFill(*pTextClippingPath, nullptr, fill_options);
     pTextClippingPath.reset();
@@ -640,6 +655,9 @@ bool CPDF_RenderStatus::SelectClipPath(const CPDF_PathObject* path_obj,
   if (options_.GetOptions().bNoPathSmooth) {
     fill_options.aliased_path = true;
   }
+  // pdfking: on inks, the pixels gs's fill of it inks
+  fill_options.gs =
+      fill_options.aliased_path && GetInks(context_->GetDocument());
   return device_->SetClip_PathFill(*path_obj->path().GetObject(), &path_matrix,
                                    fill_options);
 }
@@ -950,15 +968,41 @@ bool CPDF_RenderStatus::ProcessText(CPDF_TextObject* textobj,
         pDeviceMatrix = &device_matrix;
       }
     }
+    CFX_FillRenderOptions text_options = GetFillOptionsForDrawTextPath(
+        options_.GetOptions(), textobj, is_stroke, is_fill);
+    // pdfking: on inks, glyph outlines filled and stroked as gs does
+    if (CPDF_Inks* inks = GetGsInks(context_->GetDocument());
+        inks && text_options.aliased_path) {
+      text_options.gs = true;
+      text_options.adjust_stroke |= inks->dpi() < 150;
+      text_options.gs_positioned = true;
+      // at gs's current point (a clip's text was shown already: gs's point
+      // left where that show left it)
+      const std::optional<GsTextEnd> shown = gs_text_end_;
+      const std::vector<float> positions =
+          GsTextPositions(textobj, textobj->GetTextMatrix() * mtObj2Device);
+      if (is_clip) {
+        gs_text_end_ = shown;
+      }
+      return CPDF_TextRenderer::DrawTextPath(
+          device_, textobj->GetCharCodes(), positions, pFont.Get(), font_size,
+          text_matrix, pDeviceMatrix, textobj->graph_state().GetObject(),
+          fill_argb, stroke_argb, clipping_path, text_options);
+    }
     return CPDF_TextRenderer::DrawTextPath(
         device_, textobj->GetCharCodes(), textobj->GetCharPositions(),
         pFont.Get(), font_size, text_matrix, pDeviceMatrix,
         textobj->graph_state().GetObject(), fill_argb, stroke_argb,
-        clipping_path,
-        GetFillOptionsForDrawTextPath(options_.GetOptions(), textobj, is_stroke,
-                                      is_fill));
+        clipping_path, text_options);
   }
   text_matrix.Concat(mtObj2Device);
+  if (GetGsInks(context_->GetDocument()) &&
+      options_.GetOptions().bNoTextSmooth) {
+    const std::vector<float> positions = GsTextPositions(textobj, text_matrix);
+    return CPDF_TextRenderer::DrawNormalText(
+        device_, textobj->GetCharCodes(), positions, pFont.Get(), font_size,
+        text_matrix, fill_argb, options_, /*gs_positioned=*/true);
+  }
   return CPDF_TextRenderer::DrawNormalText(
       device_, textobj->GetCharCodes(), textobj->GetCharPositions(),
       pFont.Get(), font_size, text_matrix, fill_argb, options_);
@@ -992,6 +1036,11 @@ bool CPDF_RenderStatus::ProcessType3Text(CPDF_TextObject* textobj,
   if (!IsPrint()) {
     glyphs.resize(textobj->GetCharCodes().size());
   }
+  // pdfking: on inks, the glyphs at gs's current point
+  const bool inks = GetGsInks(context_->GetDocument());
+  const std::vector<float> positions =
+      inks ? GsTextPositions(textobj, text_matrix * mtObj2Device)
+           : textobj->GetCharPositions();
 
   for (size_t iChar = 0; iChar < textobj->GetCharCodes().size(); ++iChar) {
     uint32_t charcode = textobj->GetCharCodes()[iChar];
@@ -1005,10 +1054,24 @@ bool CPDF_RenderStatus::ProcessType3Text(CPDF_TextObject* textobj,
     }
 
     CFX_Matrix matrix = char_matrix;
-    matrix.e += textobj->GetCharPositions()[iChar];
+    matrix.e += positions[iChar];
     matrix.Concat(text_matrix);
     matrix.Concat(mtObj2Device);
-    if (!pType3Char->LoadBitmapFromSoleImageOfForm()) {
+    // pdfking: on inks, a glyph that takes its color (d1) as gs draws it
+    // from its cache: rendered with its origin on a pixel, at the pixel its
+    // origin rounds to (1/256 first, as gs's current point)
+    if (inks && !pType3Char->colored()) {
+      auto gs_pixel = [](float v) {
+        const double fixed = floor(static_cast<double>(v) * 256.0 + 0.5);
+        return static_cast<float>(floor((fixed + 128.0) / 256.0));
+      };
+      matrix.e = gs_pixel(matrix.e);
+      matrix.f = gs_pixel(matrix.f);
+    }
+    // pdfking: on inks the glyph's image is drawn as gs draws it (an image
+    // mask through its image code), not stretched smooth from the bitmap
+    const bool gs_image = inks && pType3Char->form();
+    if (gs_image || !pType3Char->LoadBitmapFromSoleImageOfForm()) {
       if (!glyphs.empty()) {
         for (size_t i = 0; i < iChar; ++i) {
           const TextGlyphPos& glyph = glyphs[i];
@@ -1081,6 +1144,11 @@ bool CPDF_RenderStatus::ProcessType3Text(CPDF_TextObject* textobj,
         status.type3_font_cache_.emplace_back(pType3Font);
         matrix.Translate(-rect.left, -rect.top);
         status.RenderObjectList(pForm, matrix);
+        // pdfking: a colored glyph (d0) paints in its own colors, opaque:
+        // the text's opacity over it all (an uncolored one's is in its color)
+        if (pType3Char->colored()) {
+          bitmap_device->MultiplyAlpha(fill_alpha / 255.0f);
+        }
         device_->SetDIBits(bitmap_device->GetBitmap(), rect.left, rect.top);
       }
     } else if (pType3Char->GetBitmap()) {
@@ -1183,6 +1251,9 @@ void CPDF_RenderStatus::DrawTextPathWithPattern(const CPDF_TextObject* textobj,
     path.mutable_general_state() = textobj->general_state();
     path.path().AppendFloatRect(textobj->GetRect());
     path.SetRect(textobj->GetRect());
+    if (DrawTextWithPatternAsGs(textobj, mtObj2Device, &path)) {
+      return;  // pdfking
+    }
 
     AutoRestorer<UnownedPtr<const CPDF_PageObject>> restorer2(&cur_obj_);
     RenderSingleObject(&path, mtObj2Device);
@@ -1239,8 +1310,14 @@ void CPDF_RenderStatus::DrawShadingPattern(CPDF_ShadingPattern* pattern,
   int alpha =
       FXSYS_roundf(255 * (stroke ? pPageObj->general_state().GetStrokeAlpha()
                                  : pPageObj->general_state().GetFillAlpha()));
+  FX_RECT shape = pPageObj->GetTransformedBBox(mtObj2Device);
+  if (pPageObj->clip_path().HasRef()) {
+    shape.Intersect(
+        mtObj2Device.TransformRect(pPageObj->clip_path().GetClipBox())
+            .GetOuterRect());
+  }
   CPDF_RenderShading::Draw(device_, context_, cur_obj_, pattern, matrix, rect,
-                           alpha, options_);
+                           shape, alpha, options_);
 }
 
 void CPDF_RenderStatus::ProcessShading(const CPDF_ShadingObject* pShadingObj,
@@ -1253,6 +1330,7 @@ void CPDF_RenderStatus::ProcessShading(const CPDF_ShadingObject* pShadingObj,
   CFX_Matrix matrix = pShadingObj->matrix() * mtObj2Device;
   CPDF_RenderShading::Draw(
       device_, context_, cur_obj_, pShadingObj->pattern(), matrix, rect,
+      pShadingObj->GetTransformedBBox(mtObj2Device),
       FXSYS_roundf(255 * pShadingObj->general_state().GetFillAlpha()),
       options_);
 }
@@ -1261,6 +1339,9 @@ void CPDF_RenderStatus::DrawTilingPattern(CPDF_TilingPattern* pattern,
                                           CPDF_PageObject* pPageObj,
                                           const CFX_Matrix& mtObj2Device,
                                           bool stroke) {
+  if (DrawTilingPatternAsGs(pattern, pPageObj, mtObj2Device, stroke)) {
+    return;  // pdfking
+  }
   const std::unique_ptr<CPDF_Form> pPatternForm = pattern->Load(pPageObj);
   if (!pPatternForm) {
     return;
@@ -1521,6 +1602,10 @@ RetainPtr<CFX_DIBitmap> CPDF_RenderStatus::LoadSMask(
   CPDF_RenderOptions options;
   options.SetColorMode(bLuminosity ? CPDF_RenderOptions::kNormal
                                    : CPDF_RenderOptions::kAlpha);
+  // pdfking: on inks, rasterized as the render is (gs does not antialias)
+  if (GetGsInks(context_->GetDocument())) {
+    options.GetOptions() = options_.GetOptions();
+  }
   CPDF_RenderStatus status(context_, bitmap_device.get());
   status.SetOptions(options);
   status.SetGroupFamily(nCSFamily);

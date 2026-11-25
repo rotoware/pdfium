@@ -35,6 +35,9 @@ class CPDF_RenderOptions {
     bool bNoImageSmooth = false;
     bool bLimitedImageCache = false;
     bool bConvertFillToStroke = false;
+    // pdfking: drawing a tiling pattern's cell as gs does (its pattern
+    // accumulator: images grid fit)
+    bool bGsPatternCell = false;
   };
 
   struct ColorScheme {

@@ -294,6 +294,11 @@ public:
         if(cover < 0) {
             cover = -cover;
         }
+        // pdfking: aliased, any area at all is part of the pixel, however
+        // small (gs's any part of a pixel)
+        if (no_smooth && cover == 0 && area != 0) {
+            cover = 1;
+        }
         if(m_filling_rule == fill_even_odd) {
             cover &= aa_2mask;
             if(cover > aa_num) {

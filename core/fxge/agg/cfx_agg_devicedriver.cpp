@@ -1118,6 +1118,11 @@ bool CFX_AggDeviceDriver::SetClip_PathFill(
     clip_rgn_ =
         std::make_unique<CFX_AggClipRgn>(GetPixelWidth(), GetPixelHeight());
   }
+  if (fill_options.gs) {
+    SetClipAsGs(path, pObject2Device ? *pObject2Device : CFX_Matrix(),
+                fill_options);
+    return true;
+  }
   std::optional<CFX_FloatRect> maybe_rectf = path.GetRect(pObject2Device);
   if (maybe_rectf.has_value()) {
     CFX_FloatRect& rectf = maybe_rectf.value();
@@ -1199,6 +1204,11 @@ bool CFX_AggDeviceDriver::DrawPath(const CFX_Path& path,
   }
 
   fill_options_ = fill_options;
+  if (fill_options.gs) {
+    return DrawPathAsGs(path, pObject2Device ? *pObject2Device : CFX_Matrix(),
+                        pGraphState, fill_color, stroke_color, group_knockout,
+                        fill_options);
+  }
   if (fill_options.fill_type != CFX_FillRenderOptions::FillType::kNoFill &&
       fill_color) {
     agg::path_storage path_data = BuildAggPath(path, pObject2Device);

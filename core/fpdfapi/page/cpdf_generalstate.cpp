@@ -226,7 +226,8 @@ bool CPDF_GeneralState::GetStrokeOP() const {
 }
 
 int CPDF_GeneralState::GetOPMode() const {
-  return ref_.GetObject()->opmode_;
+  const StateData* data = ref_.GetObject();
+  return data ? data->opmode_ : 0;
 }
 
 void CPDF_GeneralState::SetOPMode(int mode) {

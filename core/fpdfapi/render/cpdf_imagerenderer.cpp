@@ -20,7 +20,9 @@
 #include "core/fpdfapi/page/cpdf_imageobject.h"
 #include "core/fpdfapi/page/cpdf_occontext.h"
 #include "core/fpdfapi/page/cpdf_page.h"
+#include "core/fpdfapi/page/cpdf_indexedcs.h"
 #include "core/fpdfapi/page/cpdf_inks.h"
+#include "core/fpdfapi/page/cpdf_plate.h"
 #include "core/fpdfapi/page/cpdf_pageimagecache.h"
 #include "core/fpdfapi/page/cpdf_pageobject.h"
 #include "core/fpdfapi/page/cpdf_shadingpattern.h"
@@ -78,8 +80,12 @@ bool CPDF_ImageRenderer::StartLoadDIBBase() {
               render_status_->GetContext()->GetPageCache()),
           render_status_->GetFormResource(), render_status_->GetPageResource(),
           render_status_->GetGroupFamily(), render_status_->GetLoadMask(),
-          {render_status_->GetRenderDevice()->GetWidth(),
-           render_status_->GetRenderDevice()->GetHeight()})) {
+          // pdfking: on inks, decoded whole, as gs does (a JPEG not
+          // decoded down to a small device: a pattern's cell, a band)
+          GetInks(render_status_->GetContext()->GetDocument())
+              ? CFX_Size()
+              : CFX_Size(render_status_->GetRenderDevice()->GetWidth(),
+                         render_status_->GetRenderDevice()->GetHeight()))) {
     return false;
   }
   mode_ = Mode::kDefault;
@@ -99,7 +105,15 @@ bool CPDF_ImageRenderer::StartRenderDIBBase() {
     return StartBitmapAlpha();
   }
   RetainPtr<const CPDF_Object> pTR = state.GetTR();
-  if (pTR) {
+  const CPDF_Plate* plate =
+      GetPlate(render_status_->GetContext()->GetDocument());
+  if (pTR && plate) {
+    // pdfking: the plate's gray through its colorant's function
+    RetainPtr<CPDF_TransferFunc> func = PlateTransferFunc(pTR.Get(), plate);
+    if (!func->GetIdentity()) {
+      dibbase_ = loader_->TranslateImage(std::move(func));
+    }
+  } else if (pTR) {
     if (!state.GetTransferFunc()) {
       state.SetTransferFunc(render_status_->GetTransferFunc(std::move(pTR)));
     }
@@ -144,6 +158,11 @@ bool CPDF_ImageRenderer::StartRenderDIBBase() {
     HandleFilters();
   }
 #endif
+
+  // pdfking: on a plate, the samples where gs places them
+  if (plate) {
+    SetGsResampleOptions(!!state.GetSoftMask());
+  }
 
   if (GetRenderOptions().GetOptions().bNoImageSmooth) {
     resample_options_.bNoSmoothing = true;
@@ -204,6 +223,7 @@ bool CPDF_ImageRenderer::Start(CPDF_ImageObject* pImageObject,
   }
 
   image_matrix_ = image_object_->matrix() * mtObj2Device;
+  GsPatternCellImage();  // pdfking
   if (StartLoadDIBBase()) {
     return true;
   }
@@ -267,7 +287,8 @@ RetainPtr<const CFX_DIBitmap> CPDF_ImageRenderer::CalculateDrawImage(
     CFX_RenderDevice* bitmap_device,
     RetainPtr<CFX_DIBBase> pDIBBase,
     const CFX_Matrix& mtNewMatrix,
-    const FX_RECT& rect) const {
+    const FX_RECT& rect,
+    const FXDIB_ResampleOptions& options) const {
   auto mask_bitmap = pdfium::MakeRetain<CFX_DIBitmap>();
   if (!mask_bitmap->Create(rect.Width(), rect.Height(),
                            FXDIB_Format::k8bppRgb)) {
@@ -288,7 +309,7 @@ RetainPtr<const CFX_DIBitmap> CPDF_ImageRenderer::CalculateDrawImage(
 
     CPDF_ImageRenderer mask_renderer(&mask_status);
     if (mask_renderer.Start(std::move(pDIBBase), 0xffffffff, mtNewMatrix,
-                            resample_options_)) {
+                            options)) {
       mask_renderer.Continue(nullptr);
     }
     if (loader_->MatteColor() != 0xffffffff) {
@@ -365,8 +386,8 @@ bool CPDF_ImageRenderer::DrawPatternImage() {
   }
 
   const CFX_Matrix new_matrix = GetDrawMatrix(rect);
-  RetainPtr<const CFX_DIBitmap> mask_bitmap =
-      CalculateDrawImage(bitmap_device.get(), dibbase_, new_matrix, rect);
+  RetainPtr<const CFX_DIBitmap> mask_bitmap = CalculateDrawImage(
+      bitmap_device.get(), dibbase_, new_matrix, rect, resample_options_);
   if (!mask_bitmap) {
     return true;
   }
@@ -410,8 +431,20 @@ bool CPDF_ImageRenderer::DrawMaskedImage() {
   if (bitmap_renderer.Start(dibbase_, 0, new_matrix, resample_options_)) {
     bitmap_renderer.Continue(nullptr);
   }
-  RetainPtr<const CFX_DIBitmap> mask_bitmap = CalculateDrawImage(
-      bitmap_device.get(), loader_->GetMask(), new_matrix, rect);
+  FXDIB_ResampleOptions mask_options = resample_options_;
+  if (mask_options.gs != FXDIB_GsSamples::kNone) {
+    mask_options.gs = MaskGsSamples();
+    // a soft mask smoothed by its own /Interpolate
+    RetainPtr<const CPDF_Stream> smask =
+        image_object_->GetImage()->GetStream()->GetDict()->GetStreamFor(
+            "SMask");
+    mask_options.gs_interpolate =
+        smask && smask->GetDict()->GetBooleanFor("Interpolate", false);
+    mask_options.gs_additive = true;
+  }
+  RetainPtr<const CFX_DIBitmap> mask_bitmap =
+      CalculateDrawImage(bitmap_device.get(), loader_->GetMask(), new_matrix,
+                         rect, mask_options);
   if (!mask_bitmap) {
     return true;
   }

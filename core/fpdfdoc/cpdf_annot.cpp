@@ -14,6 +14,7 @@
 #include "constants/annotation_common.h"
 #include "constants/annotation_flags.h"
 #include "core/fpdfapi/page/cpdf_form.h"
+#include "core/fpdfapi/page/cpdf_inks.h"
 #include "core/fpdfapi/page/cpdf_page.h"
 #include "core/fpdfapi/page/cpdf_pageimagecache.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
@@ -184,8 +185,9 @@ CPDF_Annot::Subtype CPDF_Annot::GetSubtype() const {
 }
 
 CFX_FloatRect CPDF_Annot::RectForDrawing() const {
+  // pdfking: on inks the generated appearance (gs's) is placed by /Rect
   bool bShouldUseQuadPointsCoords =
-      is_text_markup_annotation_ && has_generated_ap_;
+      is_text_markup_annotation_ && has_generated_ap_ && !GetInks(document_);
   if (bShouldUseQuadPointsCoords) {
     return BoundingRectFromQuadPoints(annot_dict_.Get());
   }

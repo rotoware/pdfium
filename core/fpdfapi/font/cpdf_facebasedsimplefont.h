@@ -21,6 +21,10 @@ class CPDF_Dictionary;
 // Note that Type3 fonts are the only non-face based simple font.
 class CPDF_FaceBasedSimpleFont : public CPDF_SimpleFont {
  public:
+  // pdfking: no /Widths: the widths are the font program's
+  bool UsesFontWidths() const { return use_font_width_; }
+  // pdfking: the /Widths (or /MissingWidth) width as written, fractions kept
+  float GetCharWidthF(uint32_t charcode);
   ~CPDF_FaceBasedSimpleFont() override;
 
   // CPDF_Font:
@@ -43,6 +47,7 @@ class CPDF_FaceBasedSimpleFont : public CPDF_SimpleFont {
   bool use_font_width_ = false;
   std::array<uint16_t, kInternalTableSize> glyph_index_;
   std::array<uint16_t, kInternalTableSize> char_width_;
+  std::array<float, kInternalTableSize> char_width_f_;  // pdfking; -1: none
   std::array<FX_RECT, kInternalTableSize> char_bbox_;
 };
 

@@ -7,6 +7,7 @@
 #include "core/fpdfapi/font/cpdf_type3font.h"
 
 #include <algorithm>
+#include <cmath>
 #include <iterator>
 #include <type_traits>
 #include <utility>
@@ -73,6 +74,21 @@ bool CPDF_Type3Font::Load() {
 
   const size_t kCharLimit = char_width_l_.size();
   int StartChar = font_dict_->GetIntegerFor("FirstChar");
+  // pdfking: pdfi's widths (pdfi_font_create_widths): /MissingWidth but for
+  // FirstChar..LastChar, those from /Widths
+  {
+    RetainPtr<const CPDF_Dictionary> desc =
+        font_dict_->GetDictFor("FontDescriptor");
+    char_width_f_.fill(desc ? desc->GetFloatFor("MissingWidth") : 0);
+    RetainPtr<const CPDF_Array> widths = font_dict_->GetArrayFor("Widths");
+    const int last = font_dict_->GetIntegerFor("LastChar");
+    for (int c = std::max(StartChar, 0); widths && c <= last && c < 256 &&
+                                         static_cast<size_t>(c - StartChar) <
+                                             widths->size();
+         ++c) {
+      char_width_f_[c] = widths->GetFloatAt(c - StartChar);
+    }
+  }
   if (StartChar >= 0 && static_cast<size_t>(StartChar) < kCharLimit) {
     RetainPtr<const CPDF_Array> pWidthArray = font_dict_->GetArrayFor("Widths");
     if (pWidthArray) {
@@ -160,6 +176,13 @@ int CPDF_Type3Font::GetCharWidth(uint32_t charcode) {
 
   const CPDF_Type3Char* pChar = LoadChar(charcode);
   return pChar ? pChar->width() : 0;
+}
+
+float CPDF_Type3Font::GetGsWidth(uint32_t charcode) const {
+  const double width = charcode < 256 ? char_width_f_[charcode] : 0;
+  const double x = width * font_matrix_.a;
+  const double y = width * font_matrix_.b;
+  return static_cast<float>(hypot(x, y) * (width < 0 ? -1.0 : 1.0));
 }
 
 FX_RECT CPDF_Type3Font::GetCharBBox(uint32_t charcode) {

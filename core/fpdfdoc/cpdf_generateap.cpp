@@ -1446,6 +1446,8 @@ bool GenerateStrikeOutAP(CPDF_Document* doc, CPDF_Dictionary* annot_dict) {
 
 }  // namespace
 
+#include "core/fpdfdoc/cpdf_generateap_gs.inc"  // pdfking
+
 // static
 void CPDF_GenerateAP::GenerateFormAP(CPDF_Document* doc,
                                      CPDF_Dictionary* annot_dict,
@@ -1597,6 +1599,12 @@ void CPDF_GenerateAP::GenerateEmptyAP(CPDF_Document* doc,
 bool CPDF_GenerateAP::GenerateAnnotAP(CPDF_Document* doc,
                                       CPDF_Dictionary* annot_dict,
                                       CPDF_Annot::Subtype subtype) {
+  // pdfking: on inks (separations), as gs draws it
+  if (GetInks(doc)) {
+    if (std::optional<bool> gs = GenerateGsAnnotAP(doc, annot_dict, subtype)) {
+      return gs.value();
+    }
+  }
   switch (subtype) {
     case CPDF_Annot::Subtype::CIRCLE:
       return GenerateCircleAP(doc, annot_dict);

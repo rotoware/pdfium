@@ -54,6 +54,9 @@ enum FontWeight {
 // Indicates that font properties (style, weight, ...) come from an external
 // source rather than the font file itself.
 constexpr uint32_t kFontUseExternAttr = 0x80000;
+// pdfking: the font a CIDFont substitutes (FindSubstFace finds it as gs
+// finds a CIDFont's)
+constexpr uint32_t kFontCidSubst = 0x40000000;
 
 struct CharCodeAndIndex {
   uint32_t char_code;

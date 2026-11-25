@@ -7,6 +7,7 @@
 #include "core/fpdfapi/page/cpdf_sampledfunc.h"
 
 #include <algorithm>
+#include <optional>
 #include <utility>
 
 #include "core/fpdfapi/parser/cpdf_array.h"
@@ -136,54 +137,61 @@ bool CPDF_SampledFunc::v_Call(pdfium::span<const float> inputs,
     return false;
   }
 
-  int bits_to_skip;
-  {
-    FX_SAFE_INT32 bitpos = pos;
-    bitpos *= bits_to_output.ValueOrDie();
-    bits_to_skip = bitpos.ValueOrDefault(-1);
-    if (bits_to_skip < 0) {
-      return false;
-    }
-
-    FX_SAFE_INT32 range_check = bitpos;
-    range_check += bits_to_output.ValueOrDie();
-    if (!range_check.IsValid()) {
-      return false;
-    }
-  }
-
   pdfium::span<const uint8_t> pSampleData = sample_stream_->GetSpan();
   if (pSampleData.empty()) {
     return false;
   }
 
-  CFX_BitStream bitstream(pSampleData);
-  bitstream.SkipBits(bits_to_skip);
+  // pdfking: multilinear between the 2^m samples around the input, as gs
+  // interpolates (gsfunc0.c fn_interpolate_linear): only along the inputs
+  // that fall between two samples
+  absl::InlinedVector<uint32_t, 16, FxAllocAllocator<uint32_t>> between;
+  for (uint32_t j = 0; j < inputs_; ++j) {
+    if (index[j] + 1 < encode_info_[j].sizes &&
+        encoded_input[j] > static_cast<float>(index[j])) {
+      between.push_back(j);
+    }
+  }
+  if (between.size() > 16) {
+    return false;
+  }
+  auto sample_at = [&](int at, uint32_t i) -> std::optional<float> {
+    FX_SAFE_INT32 bitpos = at;
+    bitpos *= outputs_;
+    bitpos += i;
+    bitpos *= bits_per_sample_;
+    FX_SAFE_INT32 end_bit = bitpos;
+    end_bit += bits_per_sample_;
+    const int start = bitpos.ValueOrDefault(-1);
+    const int end = end_bit.ValueOrDefault(-1);
+    if (start < 0 || end < 0 ||
+        static_cast<size_t>(end) > pSampleData.size() * 8) {
+      return std::nullopt;
+    }
+    CFX_BitStream bitstream(pSampleData);
+    bitstream.SkipBits(start);
+    return static_cast<float>(bitstream.GetBits(bits_per_sample_));
+  };
   for (uint32_t i = 0; i < outputs_; ++i) {
-    uint32_t sample = bitstream.GetBits(bits_per_sample_);
-    float encoded = sample;
-    for (uint32_t j = 0; j < inputs_; ++j) {
-      if (index[j] == encode_info_[j].sizes - 1) {
-        if (index[j] == 0) {
-          encoded = encoded_input[j] * sample;
+    float encoded = 0;
+    for (uint32_t corner = 0; corner < (1u << between.size()); ++corner) {
+      float weight = 1;
+      int at = pos;
+      for (size_t k = 0; k < between.size(); ++k) {
+        const uint32_t j = between[k];
+        const float fraction = encoded_input[j] - index[j];
+        if (corner & (1u << k)) {
+          weight *= fraction;
+          at += blocksize[j];
+        } else {
+          weight *= 1 - fraction;
         }
-      } else {
-        FX_SAFE_INT32 bitpos2 = blocksize[j];
-        bitpos2 += pos;
-        bitpos2 *= outputs_;
-        bitpos2 += i;
-        bitpos2 *= bits_per_sample_;
-        int bits_to_skip2 = bitpos2.ValueOrDefault(-1);
-        if (bits_to_skip2 < 0) {
-          return false;
-        }
-
-        CFX_BitStream bitstream2(pSampleData);
-        bitstream2.SkipBits(bits_to_skip2);
-        float sample2 =
-            static_cast<float>(bitstream2.GetBits(bits_per_sample_));
-        encoded += (encoded_input[j] - index[j]) * (sample2 - sample);
       }
+      std::optional<float> sample = sample_at(at, i);
+      if (!sample.has_value()) {
+        return false;
+      }
+      encoded += weight * sample.value();
     }
     results[i] =
         Interpolate(encoded, 0, sample_max_, decode_info_[i].decode_min,

@@ -17,12 +17,15 @@ struct FX_RECT;
 
 class CPDF_RenderShading {
  public:
+  // pdfking: `shape_rect` is what is filled on the device, `clip_rect` not
+  // cut to the device's clip box (a band's): on inks, gs's clip box.
   static void Draw(CFX_RenderDevice* pDevice,
                    CPDF_RenderContext* context,
                    const CPDF_PageObject* pCurObj,
                    const CPDF_ShadingPattern* pPattern,
                    const CFX_Matrix& mtMatrix,
                    const FX_RECT& clip_rect,
+                   const FX_RECT& shape_rect,
                    int alpha,
                    const CPDF_RenderOptions& options);
 

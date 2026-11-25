@@ -59,6 +59,9 @@ source_set("fpdfsdk") {
     "fpdf_thumbnail.cpp",
     "fpdf_transformpage.cpp",
     "fpdf_view.cpp",
+
+    # pdfking
+    "fpdf_pdfking.cpp",
   ]
 
   configs += [

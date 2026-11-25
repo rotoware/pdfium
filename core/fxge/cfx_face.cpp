@@ -31,6 +31,7 @@
 #include "core/fxge/cfx_gemodule.h"
 #include "core/fxge/cfx_glyphbitmap.h"
 #include "core/fxge/cfx_glyphcache.h"
+#include "core/fxge/cfx_face_gs.h"  // pdfking
 #include "core/fxge/cfx_path.h"
 #include "core/fxge/cfx_substfont.h"
 #include "core/fxge/dib/cfx_dibitmap.h"
@@ -988,7 +989,8 @@ std::unique_ptr<CFX_GlyphBitmap> CFX_Face::RenderGlyph(
     const CFX_Matrix& matrix,
     int dest_width,
     FontAntiAliasingMode anti_alias,
-    const CFX_SubstFont* subst_font) {
+    const CFX_SubstFont* subst_font,
+    float gs_dpi) {
 #if defined(PDF_ENABLE_FONTATIONS)
   if (CFX_GEModule::IsFontations()) {
     if (!skrifa_font_ || !skrifa_font_->font->is_ok()) {
@@ -1217,12 +1219,49 @@ std::unique_ptr<CFX_GlyphBitmap> CFX_Face::RenderGlyph(
   auto* glyph = rec->glyph;
   glyph->format = FT_GLYPH_FORMAT_OUTLINE;
 
+  // pdfking: aliased, as gs renders a glyph (fapi_ft.c): FreeType sized to
+  // the glyph's pixels per em (what TrueType hints for), the rest of the
+  // matrix its transform, TrueType hinted, Type 1 and CFF not, rendered mono
+  const bool as_gs = anti_alias == FontAntiAliasingMode::kMono;
+  const char* font_format = as_gs ? FT_Get_Font_Format(rec) : nullptr;
+  const bool truetype = font_format && strcmp(font_format, "TrueType") == 0;
+  if (as_gs && gs_dpi > 0) {
+    GsDecompose(rec, gs_dpi, truetype, &ft_matrix);
+  } else if (as_gs) {
+    const double scale =
+        std::min(hypot(ft_matrix.xx, ft_matrix.xy),
+                 hypot(ft_matrix.yx, ft_matrix.yy)) /
+        65536.0 * 64;  // pixels per em: the face is 64 of them
+    if (scale > 0 &&
+        FT_Set_Char_Size(rec, static_cast<FT_F26Dot6>(scale * 64),
+                         static_cast<FT_F26Dot6>(scale * 64), 72, 72) == 0) {
+      const double unit = 64.0 / scale;
+      ft_matrix.xx = static_cast<FT_Fixed>(ft_matrix.xx * unit);
+      ft_matrix.xy = static_cast<FT_Fixed>(ft_matrix.xy * unit);
+      ft_matrix.yx = static_cast<FT_Fixed>(ft_matrix.yx * unit);
+      ft_matrix.yy = static_cast<FT_Fixed>(ft_matrix.yy * unit);
+    }
+  }
+  struct PixelSizeRestorer {
+    ~PixelSizeRestorer() {
+      if (on) {
+        FT_Set_Pixel_Sizes(rec, 64, 64);
+      }
+    }
+    FT_FaceRec* rec;
+    bool on;
+  } restore_size{rec, as_gs};
+
   ScopedFaceTransform scoped_transform(GetRec(), &ft_matrix);
   int load_flags = FT_LOAD_NO_BITMAP | FT_LOAD_PEDANTIC;
-  if (!IsTtOt()) {
+  if (!as_gs && !IsTtOt()) {
     load_flags |= FT_LOAD_NO_HINTING;
   }
-  int error = FT_Load_Glyph(rec, glyph_index, load_flags);
+  int error = as_gs ? GsLoadGlyph(rec, glyph_index, truetype)
+                    : FT_Load_Glyph(rec, glyph_index, load_flags);
+  if (as_gs && error) {
+    return nullptr;
+  }
   if (error) {
     if (load_flags & FT_LOAD_NO_HINTING) {
       return nullptr;
@@ -1240,8 +1279,19 @@ std::unique_ptr<CFX_GlyphBitmap> CFX_Face::RenderGlyph(
   }
   CFX_FontMgr* font_mgr = CFX_GEModule::Get()->GetFontMgr();
   FT_Library_SetLcdFilter(font_mgr->GetFTLibrary(), FT_LCD_FILTER_DEFAULT);
-  error =
-      FT_Render_Glyph(glyph, FtRenderModeFromFontAntiAliasingMode(anti_alias));
+  if (as_gs) {
+    // gs's "more control over the size FreeType renders" (fapi_ft.c)
+    const FT_UShort x_ppem = rec->size->metrics.x_ppem;
+    const FT_UShort y_ppem = rec->size->metrics.y_ppem;
+    rec->size->metrics.x_ppem = rec->size->metrics.y_ppem =
+        truetype ? 2048 : 1000;
+    error = FT_Render_Glyph(glyph, FT_RENDER_MODE_MONO);
+    rec->size->metrics.x_ppem = x_ppem;
+    rec->size->metrics.y_ppem = y_ppem;
+  } else {
+    error = FT_Render_Glyph(glyph,
+                            FtRenderModeFromFontAntiAliasingMode(anti_alias));
+  }
   if (error) {
     return nullptr;
   }

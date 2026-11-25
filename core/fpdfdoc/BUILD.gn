@@ -37,6 +37,7 @@ source_set("fpdfdoc") {
     "cpdf_formfield.h",
     "cpdf_generateap.cpp",
     "cpdf_generateap.h",
+    "cpdf_generateap_gs.inc",  # pdfking
     "cpdf_icon.cpp",
     "cpdf_icon.h",
     "cpdf_iconfit.cpp",

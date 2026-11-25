@@ -30,6 +30,7 @@
 #include "public/fpdf_dataavail.h"
 #include "public/fpdf_edit.h"
 #include "public/fpdf_ext.h"
+#include "public/fpdf_pdfking.h"
 #include "public/fpdf_formfill.h"
 #include "public/fpdf_progressive.h"
 #include "public/fpdf_structtree.h"

@@ -5,6 +5,7 @@
 // Original code copyright 2014 Foxit Software Inc. http://www.foxitsoftware.com
 
 #include "core/fxge/cfx_renderdevice.h"
+#include "core/fxge/cfx_renderdevice_gs.h"  // pdfking
 
 #include <math.h>
 
@@ -643,6 +644,13 @@ bool CFX_RenderDevice::DrawPath(const CFX_Path& path,
   uint8_t fill_alpha = fill ? FXARGB_A(fill_color) : 0;
   uint8_t stroke_alpha = pGraphState ? FXARGB_A(stroke_color) : 0;
   pdfium::span<const CFX_Path::Point> points = path.GetPoints();
+  // pdfking: gs fills and strokes every path the same way, no shortcuts
+  if (fill_options.gs &&
+      !(fill && fill_alpha && stroke_alpha < 0xff && fill_options.stroke)) {
+    return device_driver_->DrawPath(path, pObject2Device, pGraphState,
+                                    fill_color, stroke_color, group_knockout_,
+                                    fill_options);
+  }
   if (stroke_alpha == 0 && points.size() == 2) {
     CFX_PointF pos1 = points[0].point_;
     CFX_PointF pos2 = points[1].point_;
@@ -1185,7 +1193,16 @@ bool CFX_RenderDevice::DrawNormalText(pdfium::span<const TextCharPos> pCharPos,
   CFX_Matrix char2device = mtText2Device;
   CFX_Matrix text2Device = mtText2Device;
   char2device.Scale(font_size, -font_size);
-  if (fabs(char2device.a) + fabs(char2device.b) > 50 * 1.0f || is_printer) {
+  // pdfking: aliased, glyphs as gs draws them: bitmaps while gs caches them
+  // (a bitmap under 48000 bytes, its rows padded to 64 bits), paths above
+  const bool as_gs = anti_alias == FontAntiAliasingMode::kMono;
+  const float em = hypotf(char2device.a, char2device.b) +
+                   hypotf(char2device.c, char2device.d);
+  const bool large =
+      as_gs ? (FXSYS_roundf(em) + 63) / 64 * 8 * FXSYS_roundf(em) >= 48000
+            : fabs(char2device.a) + fabs(char2device.b) > 50 * 1.0f;
+  if ((large && !(as_gs && options.gs_dpi > 0 && font->GetFace())) ||
+      is_printer) {
     if (font->HasFace()) {
       CFX_FillRenderOptions path_options;
       path_options.aliased_path = !is_text_smooth;
@@ -1195,20 +1212,98 @@ bool CFX_RenderDevice::DrawNormalText(pdfium::span<const TextCharPos> pCharPos,
   }
   std::vector<TextGlyphPos> glyphs(pCharPos.size());
   const bool anti_alias_is_lcd = anti_alias == FontAntiAliasingMode::kLcd;
+  // gs's current point: the run's start, then each glyph's advance in
+  // device 1/256 pixels, truncated (gs_distance_transform2fixed), added
+  CFX_PointF previous;
+  std::vector<CFX_PointF> gs_origins;
+  double gs_x = 0;
+  double gs_y = 0;
+  bool first = true;
   for (auto [charpos, glyph] : fxcrt::Zip(pCharPos, pdfium::span(glyphs))) {
     glyph.device_origin_ = text2Device.Transform(charpos.origin_);
+    if (as_gs) {
+      if (first || options.gs_positioned) {
+        gs_x = glyph.device_origin_.x;
+        gs_y = glyph.device_origin_.y;
+        first = false;
+      } else {
+        gs_x += trunc((glyph.device_origin_.x - previous.x) * 256.0) /
+                256.0;
+        gs_y += trunc((glyph.device_origin_.y - previous.y) * 256.0) /
+                256.0;
+      }
+      previous = glyph.device_origin_;
+    }
     glyph.origin_.x = anti_alias_is_lcd
                           ? static_cast<int>(floor(glyph.device_origin_.x))
-                          : FXSYS_roundf(glyph.device_origin_.x);
-    glyph.origin_.y = FXSYS_roundf(glyph.device_origin_.y);
+                      : as_gs ? GsPixel(gs_x)
+                              : FXSYS_roundf(glyph.device_origin_.x);
+    glyph.origin_.y = as_gs ? GsPixel(gs_y)
+                            : FXSYS_roundf(glyph.device_origin_.y);
+    // the current point in gs's 1/256 pixels
+    gs_origins.emplace_back(floor(gs_x * 256.0 + 0.5) / 256.0,
+                            floor(gs_y * 256.0 + 0.5) / 256.0);
 
     CFX_Matrix matrix = charpos.GetEffectiveMatrix(char2device);
     glyph.glyph_ = font->LoadGlyphBitmap(
         charpos.glyph_index_, charpos.is_cid_font_, matrix,
         charpos.font_char_width_, anti_alias, &text_options);
+    // a glyph gs does not cache it images where its origin's pixel plus the
+    // bitmap's offset, + 0.5, truncates to (gxfapi.c
+    // fapi_image_uncached_glyph): a pixel on for a side left of or above the
+    // page
+    if (as_gs && options.gs_dpi > 0 && !options.gs_outline && !large &&
+        glyph.glyph_ && font->GetFace() &&
+        !GsCachesGlyph(*font->GetFace(), matrix, *glyph.glyph_)) {
+      if (glyph.origin_.x + glyph.glyph_->top_left_origin().x <
+          options.gs_page_origin.x) {
+        ++glyph.origin_.x;
+      }
+      if (glyph.origin_.y - glyph.glyph_->top_left_origin().y <
+          options.gs_page_origin.y) {
+        ++glyph.origin_.y;
+      }
+    }
   }
-  if (!anti_alias_is_lcd && glyphs.size() > 1) {
+  if (!anti_alias_is_lcd && !as_gs && glyphs.size() > 1) {
     AdjustGlyphSpace(&glyphs);
+  }
+  // pdfking: on a page with transparency gs fills the glyphs' outlines, each
+  // at its current point
+  if (as_gs && (options.gs_outline || large) && options.gs_dpi > 0 &&
+      font->GetFace()) {
+    CFX_Path outlines;
+    for (size_t i = 0; i < pCharPos.size(); ++i) {
+      std::unique_ptr<CFX_Path> outline = font->GetFace()->GsGlyphOutline(
+          pCharPos[i].glyph_index_, pCharPos[i].GetEffectiveMatrix(char2device),
+          options.gs_dpi);
+      if (outline) {
+        // (gs's transparency outline at the pixel-rounded origin, an
+        // uncached glyph at the current point itself)
+        const CFX_Matrix place =
+            options.gs_outline
+                ? CFX_Matrix(1, 0, 0, 1, glyphs[i].origin_.x,
+                             glyphs[i].origin_.y)
+                : CFX_Matrix(1, 0, 0, 1, gs_origins[i].x, gs_origins[i].y);
+        outlines.Append(*outline, &place);
+      }
+    }
+    // filled with its fill adjustment 0, as gs fills a glyph's outline:
+    // the pixels whose centers are inside
+    const CFX_FloatRect box = outlines.GetBoundingBox();
+    const FX_RECT rect(static_cast<int>(floor(box.left)),
+                       static_cast<int>(floor(box.bottom)),
+                       static_cast<int>(ceil(box.right)) + 1,
+                       static_cast<int>(ceil(box.top)) + 1);
+    if (rect.Width() <= 0 || rect.Height() <= 0) {
+      return true;
+    }
+    auto mask = pdfium::MakeRetain<CFX_DIBitmap>();
+    if (!mask->Create(rect.Width(), rect.Height(), FXDIB_Format::k8bppMask)) {
+      return false;
+    }
+    GsCenterFill(outlines, rect, mask);
+    return SetBitMask(std::move(mask), rect.left, rect.top, fill_color);
   }
 
   FX_RECT bmp_rect = GetGlyphsBBox(glyphs, anti_alias_is_lcd);
@@ -1329,7 +1424,14 @@ bool CFX_RenderDevice::DrawTextPath(pdfium::span<const TextCharPos> pCharPos,
                                     uint32_t fill_color,
                                     FX_ARGB stroke_color,
                                     CFX_Path* pClippingPath,
-                                    const CFX_FillRenderOptions& fill_options) {
+                                    const CFX_FillRenderOptions& fill_options,
+                                    float gs_dpi) {
+  // pdfking: as gs's charpath (cfx_renderdevice_gs.cpp)
+  if (fill_options.gs && gs_dpi > 0 && pUser2Device && font->GetFace()) {
+    return GsDrawTextPath(this, pCharPos, font, font_size, mtText2User,
+                          *pUser2Device, pGraphState, fill_color,
+                          stroke_color, pClippingPath, fill_options, gs_dpi);
+  }
   for (const auto& charpos : pCharPos) {
     const CFX_Path* pPath =
         font->LoadGlyphPath(charpos.glyph_index_, charpos.font_char_width_);

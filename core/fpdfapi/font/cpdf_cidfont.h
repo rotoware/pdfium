@@ -62,6 +62,8 @@ class CPDF_CIDFont final : public CPDF_Font {
   size_t CountChar(ByteStringView pString) const override;
   void AppendChar(ByteString* str, uint32_t charcode) const override;
   bool IsVertWriting() const override;
+  // pdfking: CIDFontType2 (TrueType outlines)
+  bool IsTrueTypeCID() const { return font_type_ == CIDFontType::kTrueType; }
   bool IsUnicodeCompatible() const override;
   bool Load() override;
   WideString UnicodeFromCharCode(uint32_t charcode) const override;
@@ -70,6 +72,8 @@ class CPDF_CIDFont final : public CPDF_Font {
   uint16_t CIDFromCharCode(uint32_t charcode) const;
   const CIDTransform* GetCIDTransform(uint16_t cid) const;
   int16_t GetVertWidth(uint16_t cid) const;
+  // pdfking: the /W (or /DW) width as written, fractions kept
+  float GetCharWidthF(uint32_t charcode);
   CFX_Point16 GetVertOrigin(uint16_t cid) const;
   int GetCharSize(uint32_t charcode) const;
 
@@ -100,6 +104,8 @@ class CPDF_CIDFont final : public CPDF_Font {
   int16_t default_vy_ = 880;
   int16_t default_w1_ = -1000;
   std::vector<int> width_list_;
+  std::vector<float> width_values_;  // pdfking: width_list_'s values as read
+  float default_width_f_ = 1000;
   std::vector<int> vert_metrics_;
   std::array<FX_RECT, 256> char_bbox_;
 };

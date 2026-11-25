@@ -42,6 +42,7 @@ class CPDF_ToUnicodeMap {
   // Returns the last word `parser` encountered.
   ByteStringView HandleBeginBFChar(CPDF_SimpleParser& parser,
                                    ByteStringView previous_word);
+  ByteStringView HandleBeginCIDRange(CPDF_SimpleParser& parser, bool single);
   ByteStringView HandleBeginBFRange(CPDF_SimpleParser& parser,
                                     ByteStringView previous_word);
 

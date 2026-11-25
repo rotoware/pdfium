@@ -111,7 +111,18 @@ class CFX_Face final : public Retainable, public Observable {
                                                const CFX_Matrix& matrix,
                                                int dest_width,
                                                FontAntiAliasingMode anti_alias,
-                                               const CFX_SubstFont* subst_font);
+                                               const CFX_SubstFont* subst_font,
+                                               float gs_dpi = 0);
+  // pdfking: the outline gs fills for the glyph at `matrix` (glyph space
+  // to pixels) at `gs_dpi`: loaded as gs's FAPI loads it, in pixels from
+  // its origin, y down, as gs's device fixed point (fixed / 256); null for
+  // none
+  // pdfking: the glyph's advance as gs's FAPI takes it (FreeType's
+  // linearHoriAdvance, font units, unrounded), in ems; 0 if it can't load
+  double GsAdvance(uint32_t glyph_index);
+  std::unique_ptr<CFX_Path> GsGlyphOutline(uint32_t glyph_index,
+                                           const CFX_Matrix& matrix,
+                                           float gs_dpi);
   std::unique_ptr<CFX_Path> LoadGlyphPath(uint32_t glyph_index,
                                           int dest_width,
                                           bool is_vertical,

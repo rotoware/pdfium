@@ -10,6 +10,7 @@
 #include <stdint.h>
 
 #include <memory>
+#include <vector>
 
 #include "core/fxcrt/raw_span.h"
 #include "core/fxcrt/span.h"
@@ -57,6 +58,16 @@ class CJPX_Decoder {
   ~CJPX_Decoder();
 
   JpxImageInfo GetInfo() const;
+  // pdfking: the samples as gs reads them (base/sjpx_openjpeg.c): no
+  // components taken for YCC but as the codestream says, the image the size
+  // of its biggest component, a subsampled component's samples repeated.
+  // Before StartDecode().
+  void UseGsSamples() { gs_samples_ = true; }
+  // With UseGsSamples(), after StartDecode(): the components a pixel gs
+  // reads (not alpha, as many as the codestream's space has)
+  uint32_t GsChannels() const {
+    return static_cast<uint32_t>(GsComponents().size());
+  }
   bool StartDecode();
 
   // `swap_rgb` can only be set when an image's color space type contains at
@@ -97,7 +108,16 @@ class CJPX_Decoder {
             uint8_t resolution_levels_to_skip,
             bool strict_mode);
 
+  // The components gs reads with UseGsSamples(), in order
+  std::vector<uint32_t> GsComponents() const;
+  // Decode() with UseGsSamples()
+  bool DecodeGs(pdfium::span<uint8_t> dest_buf,
+                uint32_t pitch,
+                bool swap_rgb,
+                uint32_t channel_count);
+
   const ColorSpaceOption color_space_option_;
+  bool gs_samples_ = false;
   pdfium::raw_span<const uint8_t> src_data_;
   std::unique_ptr<DecodeData> decode_data_;
   std::unique_ptr<opj_codec_t, CodecDeleter> codec_;

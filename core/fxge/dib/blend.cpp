@@ -100,10 +100,16 @@ int Blend(BlendMode blend_mode, int back_color, int src_color) {
       return (0x1fe * back_color + s) / (s << 1);
     }
     case BlendMode::kColorBurn: {
-      if (src_color == 0) {
+      // pdfking: as gs blends it (gxblend.c art_blend_pixel_8): ISO
+      // 32000-2's, a white backdrop stays white whatever the source
+      const int b = 255 - back_color;
+      if (b == 0) {
+        return 255;
+      }
+      if (b >= src_color) {
         return 0;
       }
-      return 255 - std::min((255 - back_color) * 255 / src_color, 255);
+      return 255 - (0x1fe * b + src_color) / (src_color << 1);
     }
     case BlendMode::kHardLight:
       if (src_color < 128) {

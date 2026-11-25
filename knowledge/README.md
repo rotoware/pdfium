@@ -21,6 +21,10 @@ ignored by git).
 - `corpus/download.sh` — public rendering test PDFs (Altona, PDF
   Association pdf-differences + pdf20examples, pdf.js corpus), downloaded
   once to `.cache/corpus`; what each set covers is in the script.
+- `corpus/corpus.py` — every corpus page (~1170) separated by gs and by
+  `plates_bench --ink auto`, classified (same, near, edges, off,
+  group-cs, missing plate, size, errors...); `corpus/probe.py` — one page,
+  the (gs, pdfium) values most often off per plate. See `corpus/README.md`.
 
 ## Setup (macOS, arm64)
 
@@ -64,6 +68,12 @@ ignored by git).
     uv run --with pillow --with numpy python plates.py <pdf> ../out/plates
     # any one-page PDF (e.g. a GWG patch from knowledge/.cache/gwg), per
     # plate gs | pdfium | diff
+
+    cd knowledge/corpus
+    sh download.sh            # once, ~575 MB
+    uv run --with pillow --with numpy python corpus.py [--only=name,...] [set ...]
+    # -> knowledge/out/corpus/SUMMARY.md, results.json, a sheet per page off
+    uv run --with pillow --with numpy python probe.py <pdf> [page] [dpi]
 
 A change to the renderer must leave the separations suite byte-identical
 (compare `SUMMARY.md` and the `work/*/*/page.pdf.0.png` renders against a

@@ -11,6 +11,7 @@
 #include <stdint.h>
 
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "core/fpdfapi/render/cpdf_pagerendercontext.h"
@@ -40,7 +41,7 @@ class CPDF_AnnotList final : public CPDF_PageRenderContext::AnnotListIface {
   void DisplayPass(CPDF_RenderContext* context,
                    bool bPrinting,
                    const CFX_Matrix& mtMatrix,
-                   bool bWidget);
+                   std::optional<bool> widget_pass);
 
   UnownedPtr<CPDF_Page> const page_;
   UnownedPtr<CPDF_Document> const document_;

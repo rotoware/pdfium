@@ -24,6 +24,9 @@ CACHE = f"{KNOWLEDGE}/.cache/gwg"
 OUT = f"{KNOWLEDGE}/out/gwg"
 WORK = f"{OUT}/work"
 BENCH = f"{KNOWLEDGE}/../out/native/plates_bench"
+PROFILES = f"{KNOWLEDGE}/.cache/gs/ghostscript-10.08.0/iccprofiles"
+# gs's own share/ghostscript (fonts it substitutes): the gs on PATH
+GSFONTS = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(shutil.which("gs")))), "share/ghostscript")
 URLS = ["https://gwg.org/wp-content/uploads/2026/05/Ghent_PDF_Output_Suite_V50_Testpages.zip",
         "https://gwg.org/wp-content/uploads/2026/05/Ghent_PDF_Output_Suite_V50_Patches-2.zip"]
 DPI = 144
@@ -73,7 +76,8 @@ def plates(x4):
         # each page alone (qpdf leaves it as it is), every plate in one process
         one = f"{WORK}/page{page}.pdf"
         subprocess.run(["qpdf", x4, "--pages", ".", str(page), "--", one], check=True)
-        subprocess.run([BENCH, one, str(DPI), "256", ",".join(inks), f"--dump={WORK}/pd{page}", "--ink"], check=True,
+        subprocess.run([BENCH, one, str(DPI), "256", ",".join(inks), f"--dump={WORK}/pd{page}", "--ink",
+                        f"--profiles={PROFILES}", f"--gsfonts={GSFONTS}"], check=True,
                        capture_output=True)
         for ink in inks:
             pd[page, ink] = np.asarray(Image.open(f"{WORK}/pd{page}-{ink}.pgm"))

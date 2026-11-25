@@ -12,6 +12,9 @@
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fxcrt/fx_codepage.h"
 #include "core/fxge/cfx_face.h"
+#include "core/fxge/cfx_fontmapper.h"
+#include "core/fxge/cfx_fontmgr.h"
+#include "core/fxge/cfx_gemodule.h"
 #include "core/fxge/fx_font.h"
 
 CPDF_FaceBasedSimpleFont::CPDF_FaceBasedSimpleFont(
@@ -19,6 +22,7 @@ CPDF_FaceBasedSimpleFont::CPDF_FaceBasedSimpleFont(
     RetainPtr<CPDF_Dictionary> font_dict)
     : CPDF_SimpleFont(document, std::move(font_dict)) {
   char_width_.fill(0xffff);
+  char_width_f_.fill(-1);
   glyph_index_.fill(0xffff);
   char_bbox_.fill(FX_RECT(-1, -1, -1, -1));
 }
@@ -96,6 +100,7 @@ void CPDF_FaceBasedSimpleFont::LoadCharWidths(
   if (font_desc && font_desc->KeyExist("MissingWidth")) {
     int missing_width = font_desc->GetIntegerFor("MissingWidth");
     std::ranges::fill(char_width_, missing_width);
+    std::ranges::fill(char_width_f_, font_desc->GetFloatFor("MissingWidth"));
   }
 
   size_t width_start = font_dict_->GetIntegerFor("FirstChar", 0);
@@ -112,7 +117,15 @@ void CPDF_FaceBasedSimpleFont::LoadCharWidths(
   }
   for (size_t i = width_start; i <= width_end; i++) {
     char_width_[i] = width_array->GetIntegerAt(i - width_start);
+    char_width_f_[i] = width_array->GetFloatAt(i - width_start);
   }
+}
+
+float CPDF_FaceBasedSimpleFont::GetCharWidthF(uint32_t charcode) {
+  if (charcode <= 0xff && char_width_f_[charcode] >= 0) {
+    return char_width_f_[charcode];
+  }
+  return GetCharWidth(charcode);
 }
 
 int CPDF_FaceBasedSimpleFont::GetCharWidth(uint32_t charcode) {
@@ -186,7 +199,11 @@ bool CPDF_FaceBasedSimpleFont::LoadCommon() {
 }
 
 void CPDF_FaceBasedSimpleFont::LoadSubstFont() {
-  if (!use_font_width_ && !FontStyleIsFixedPitch(flags_)) {
+  // pdfking: gs substitutes by the descriptor's flags as written, equal
+  // widths making no fixed pitch font
+  const bool gs_fonts =
+      CFX_GEModule::Get()->GetFontMgr()->GetBuiltinMapper()->HasGsFontDir();
+  if (!use_font_width_ && !FontStyleIsFixedPitch(flags_) && !gs_fonts) {
     int width = 0;
     size_t i;
     for (i = 0; i < kInternalTableSize; i++) {

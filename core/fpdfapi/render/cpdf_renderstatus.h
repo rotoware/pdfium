@@ -144,10 +144,20 @@ class CPDF_RenderStatus {
   bool PlateOverprintsBeneath(CPDF_PageObject* obj,
                               const CFX_Matrix& mtObj2Device);
   bool InkAtOnce(CPDF_PageObject* obj);
+  bool DrawTilingPatternAsGs(CPDF_TilingPattern* pattern,
+                             CPDF_PageObject* obj,
+                             const CFX_Matrix& mtObj2Device,
+                             bool stroke,
+                             RetainPtr<CFX_DIBitmap> shape = nullptr,
+                             const FX_RECT& shape_rect = FX_RECT());
+  bool DrawTextWithPatternAsGs(const CPDF_TextObject* textobj,
+                              const CFX_Matrix& mtObj2Device,
+                              CPDF_PathObject* path);
   void InkNonSeparable(CPDF_PageObject* obj, const CFX_Matrix& mtObj2Device);
   void InkCompositeLayers(const std::array<CPDF_InkLayer, 4>& layers,
                           const std::array<CFX_RenderDevice*, 4>& planes,
-                          BlendMode mode);
+                          BlendMode mode,
+                          const CFX_DIBitmap* page);
   void InkGroup(CPDF_PageObject* obj, const CFX_Matrix& mtObj2Device);
   std::unique_ptr<CPDF_RenderStatus> PlaneStatus(CFX_RenderDevice* plane);
   bool KeepInkLayer(RetainPtr<CFX_DIBitmap> bitmap, const FX_RECT& rect);
@@ -163,8 +173,23 @@ class CPDF_RenderStatus {
   void MixGroup(const CPDF_FormObject* form,
                 const CFX_Matrix& mtObj2Device,
                 const FX_RECT& rect,
-                const std::vector<RetainPtr<CFX_DIBitmap>>& backdrops);
+                const std::vector<RetainPtr<CFX_DIBitmap>>& backdrops,
+                const CFX_DIBitmap* page);
+  RetainPtr<CFX_DIBitmap> PageBackdrop(const CPDF_PageObject* obj,
+                                       const FX_RECT& rect);
+  RetainPtr<CFX_DIBitmap> GroupShape(const CPDF_FormObject* form,
+                                     const CFX_Matrix& mtObj2Device,
+                                     const FX_RECT& rect);
+  void BlendGroup(const CPDF_FormObject* form,
+                  const CFX_Matrix& mtObj2Device,
+                  const FX_RECT& rect,
+                  const std::vector<RetainPtr<CFX_DIBitmap>>& backdrops,
+                  const CFX_DIBitmap& shape,
+                  const CFX_DIBitmap* page);
   std::vector<RetainPtr<CFX_DIBitmap>> PlateBitmaps() const;
+  // pdfking: text placed as gs places it, in cpdf_renderstatus_gstext.cpp
+  std::vector<float> GsTextPositions(const CPDF_TextObject* textobj,
+                                     const CFX_Matrix& text2device);
 
   bool ProcessTransparency(CPDF_PageObject* PageObj,
                            const CFX_Matrix& mtObj2Device);
@@ -252,6 +277,15 @@ class CPDF_RenderStatus {
   CPDF_InkLayer* ink_layer_ = nullptr;
   // pdfking: drawing a knockout group's object (RenderKnockoutGroup)
   bool in_knockout_ = false;
+  // pdfking: on inks, where the last text left gs's current point, exactly
+  // and as gs has it (its advances truncated to 1/256 pixel): a show with no
+  // text positioning since starts where gs's left off, as pdfi carries its
+  // current point into the text matrix after each show
+  struct GsTextEnd {
+    CFX_PointF exact;
+    CFX_PointF gs;
+  };
+  std::optional<GsTextEnd> gs_text_end_;
   bool in_group_ = false;
   CPDF_ColorSpace::Family group_family_ = CPDF_ColorSpace::Family::kUnknown;
   FX_ARGB t3_fill_color_ = 0;

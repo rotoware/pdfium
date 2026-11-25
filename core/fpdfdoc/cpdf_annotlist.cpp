@@ -244,11 +244,11 @@ bool CPDF_AnnotList::Contains(const CPDF_Annot* pAnnot) const {
 void CPDF_AnnotList::DisplayPass(CPDF_RenderContext* context,
                                  bool bPrinting,
                                  const CFX_Matrix& mtMatrix,
-                                 bool bWidgetPass) {
+                                 std::optional<bool> widget_pass) {
   CHECK(context);
   for (const auto& pAnnot : annot_list_) {
     bool bWidget = pAnnot->GetSubtype() == CPDF_Annot::Subtype::WIDGET;
-    if ((bWidgetPass && !bWidget) || (!bWidgetPass && bWidget)) {
+    if (widget_pass.has_value() && bWidget != widget_pass.value()) {
       continue;
     }
 
@@ -275,6 +275,12 @@ void CPDF_AnnotList::DisplayAnnots(CPDF_RenderContext* context,
                                    const CFX_Matrix& mtUser2Device,
                                    bool bShowWidget) {
   CHECK(context);
+  // pdfking: printed, every annotation in the order /Annots lists them, the
+  // widgets among the others, as gs prints them (pdfi_do_annotations)
+  if (bPrinting && bShowWidget) {
+    DisplayPass(context, bPrinting, mtUser2Device, std::nullopt);
+    return;
+  }
   DisplayPass(context, bPrinting, mtUser2Device, false);
   if (bShowWidget) {
     DisplayPass(context, bPrinting, mtUser2Device, true);

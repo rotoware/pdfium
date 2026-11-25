@@ -36,13 +36,25 @@ class CFX_AggImageRenderer : public RenderDeviceDriverIface::Continuation {
   bool Continue(PauseIndicatorIface* pPause);
 
  private:
-  enum class State : uint8_t { kInitial = 0, kStretching, kTransforming };
+  enum class State : uint8_t {
+    kInitial = 0,
+    kStretching,
+    kTransforming,
+    kGs
+  };
+
+  // `bitmap` composited onto the device at `left`, `top`, clipped
+  void Composite(RetainPtr<CFX_DIBitmap> bitmap, int left, int top);
 
   RetainPtr<CFX_DIBitmap> const device_;
   UnownedPtr<const CFX_AggClipRgn> const clip_rgn_;
   const CFX_Matrix matrix_;
   std::unique_ptr<CFX_ImageTransformer> transformer_;
   std::unique_ptr<CFX_ImageStretcher> stretcher_;
+  // pdfking: the device pixels gs paints (gs_image::Draw), and where
+  RetainPtr<CFX_DIBitmap> gs_bitmap_;
+  int gs_left_ = 0;
+  int gs_top_ = 0;
   CFX_AggBitmapComposer composer_;
   FX_RECT clip_box_;
   const float alpha_;

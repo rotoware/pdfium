@@ -20,7 +20,7 @@ them.
 gs source for reference: `gs/source.sh` (cached in `.cache/gs`). File:line
 refs below are ghostscript-10.08.0.
 
-## Status (2026-11-18)
+## Status (2026-11-19)
 
 Done, first stage: one render a band to every plate asked,
 `PDFKING_LoadInks` / `PDFKING_RenderInks` / `PDFKING_CloseInks`
@@ -64,6 +64,19 @@ each with its suite page (`separations/make.py` 15, 16, 17):
   (an upstream bug: the inherited mask placed twice) and a form that is no
   group passing its mask to its objects alone; a soft mask's colors and
   opacity quantized as gs does. 09 matches but for one cell.
+
+Third stage (2026-11-19), real PDFs: `corpus/` runs ~1170 public pages
+(Altona, PDF Association, pdf.js) through gs and the ink render; 184 pages
+off became 95 (+48 set apart: groups blending in RGB/gray, which gs
+converts through and pdfium does not). Fixed: crashes (JPX with no color
+space, GetOPMode, invalid shading reloaded), ICC RGB without an output
+intent as gs -dUseFastColor, spots in inherited resources, /UserUnit
+(`PDFKING_GetPageUserUnit`), printable form fields, ColorBurn, Indexed
+index rules, multi-input sampled functions, uncolored tiling patterns,
+transfer functions per plate, Type3 d0 opacity, Multiply-in-Multiply groups
+(backdrop removal, `BlendGroup`), Lab images. Each has a cell in
+`separations/make.py` 18-corpus (byte-identical to gs); the rest is sorted
+by cause in `corpus/README.md`.
 
 Left (all in `separations/README.md`): text (gs hints glyphs through its
 character cache), shadings' steps, Lab without an output intent, gs's own

@@ -35,6 +35,9 @@
 #include "core/fxcrt/stl_util.h"
 #include "core/fxcrt/to_underlying.h"
 #include "core/fxge/cfx_cttgsubtable.h"
+#include "core/fxge/cfx_fontmapper.h"
+#include "core/fxge/cfx_fontmgr.h"
+#include "core/fxge/cfx_gemodule.h"
 #include "core/fxge/fx_font.h"
 
 namespace {
@@ -225,9 +228,12 @@ void UseCIDCharmap(const RetainPtr<CFX_Face>& face, CIDCoding coding) {
   }
 }
 
+// pdfking: `values`, if given, gets each value as the number it is (/W
+// widths may be fractional), one per entry of `result`'s values
 void LoadMetricsArray(RetainPtr<const CPDF_Array> pArray,
                       std::vector<int>* result,
-                      int nElements) {
+                      int nElements,
+                      std::vector<float>* values = nullptr) {
   int width_status = 0;
   int iCurElement = 0;
   int first_code = 0;
@@ -254,6 +260,9 @@ void LoadMetricsArray(RetainPtr<const CPDF_Array> pArray,
         result->push_back(first_code);
         for (int k = 0; k < nElements; k++) {
           result->push_back(pObjArray->GetIntegerAt(j + k));
+          if (values) {
+            values->push_back(pObjArray->GetFloatAt(j + k));
+          }
         }
         first_code++;
       }
@@ -272,6 +281,9 @@ void LoadMetricsArray(RetainPtr<const CPDF_Array> pArray,
           result->push_back(last_code);
         }
         result->push_back(pObj->GetInteger());
+        if (values) {
+          values->push_back(pObj->GetNumber());
+        }
         iCurElement++;
         if (iCurElement == nElements) {
           width_status = 0;
@@ -496,9 +508,13 @@ bool CPDF_CIDFont::Load() {
     }
   }
   default_width_ = pCIDFontDict->GetIntegerFor("DW", 1000);
+  default_width_f_ = pCIDFontDict->GetFloatFor("DW");
+  if (!pCIDFontDict->KeyExist("DW")) {
+    default_width_f_ = 1000;
+  }
   RetainPtr<const CPDF_Array> pWidthArray = pCIDFontDict->GetArrayFor("W");
   if (pWidthArray) {
-    LoadMetricsArray(std::move(pWidthArray), &width_list_, 1);
+    LoadMetricsArray(std::move(pWidthArray), &width_list_, 1, &width_values_);
   }
   if (!IsEmbedded()) {
     LoadSubstFace();
@@ -585,6 +601,21 @@ int CPDF_CIDFont::GetCharWidth(uint32_t charcode) {
   return default_width_;
 }
 
+float CPDF_CIDFont::GetCharWidthF(uint32_t charcode) {
+  if (charcode < 0x80 && ansi_widths_fixed_) {
+    return (charcode >= 32 && charcode < 127) ? 500 : 0;
+  }
+  uint16_t cid = CIDFromCharCode(charcode);
+  auto lhv_span =
+      fxcrt::reinterpret_span<const LowHighVal>(pdfium::span(width_list_));
+  for (size_t i = 0; i < lhv_span.size(); ++i) {
+    if (IsMetricForCID(lhv_span[i], cid)) {
+      return i < width_values_.size() ? width_values_[i] : lhv_span[i].val;
+    }
+  }
+  return default_width_f_;
+}
+
 int16_t CPDF_CIDFont::GetVertWidth(uint16_t cid) const {
   auto lhvxy_span =
       fxcrt::reinterpret_span<const LowHighValXY>(pdfium::span(vert_metrics_));
@@ -661,6 +692,28 @@ int CPDF_CIDFont::GlyphFromCharCode(uint32_t charcode, bool* pVertGlyph) {
 
   if (!font_file_ && (!stream_acc_ || cid2unicode_map_)) {
     uint16_t cid = CIDFromCharCode(charcode);
+    // pdfking: gs's substitute (pdf_fapi.c pdfi_fapi_get_glyph_index,
+    // pdfi_font0_map_glyph_to_unicode): the code's Unicode from the
+    // ToUnicode, else the CID's; its glyph in the font's cmap, else the
+    // space's; no Unicode: the CID as the glyph (CID 0 the space)
+    RetainPtr<CFX_Face> gs_face = font_.GetFace();
+    if (gs_face && CFX_GEModule::Get()
+                       ->GetFontMgr()
+                       ->GetBuiltinMapper()
+                       ->HasGsFontDir() &&
+        gs_face->SelectCharMap(fxge::FontEncoding::kUnicode)) {
+      WideString to_unicode = CPDF_Font::UnicodeFromCharCode(charcode);
+      wchar_t gs_unicode = to_unicode.IsEmpty() ? 0 : to_unicode.Front();
+      if (!gs_unicode && cid && cid2unicode_map_ &&
+          cid2unicode_map_->IsLoaded()) {
+        gs_unicode = cid2unicode_map_->UnicodeFromCID(cid);
+      }
+      if (!gs_unicode && cid) {
+        return cid;
+      }
+      const int index = gs_unicode ? GetGlyphIndex(gs_unicode, pVertGlyph) : 0;
+      return index ? index : GetGlyphIndex(' ', pVertGlyph);
+    }
     wchar_t unicode = 0;
     if (cid_is_gid_) {
 #if BUILDFLAG(IS_APPLE)
@@ -846,7 +899,8 @@ void CPDF_CIDFont::LoadSubstFace() {
   FX_SAFE_INT32 safe_stem_v(stem_v_);
   safe_stem_v *= 5;
   font_.LoadSubstFace(
-      base_font_name_, font_type_ == CIDFontType::kTrueType, flags_,
+      base_font_name_, font_type_ == CIDFontType::kTrueType,
+      flags_ | kFontCidSubst,
       safe_stem_v.ValueOrDefault(pdfium::kFontWeightNormal), italic_angle_,
       kCharsetCodePages[fxcrt::to_underlying(charset_)], IsVertWriting());
 }

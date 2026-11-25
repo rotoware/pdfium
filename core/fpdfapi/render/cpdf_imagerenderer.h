@@ -20,6 +20,7 @@
 class CFX_DIBBase;
 class CFX_DIBitmap;
 class CFX_RenderDevice;
+class CPDF_ColorSpace;
 class CPDF_ImageLoader;
 class CPDF_ImageObject;
 class CPDF_Pattern;
@@ -60,6 +61,7 @@ class CPDF_ImageRenderer {
   bool StartDIBBase();
   bool StartRenderDIBBase();
   bool StartLoadDIBBase();
+  void GsPatternCellImage();
   bool ContinueDefault(PauseIndicatorIface* pPause);
   bool ContinueBlend(PauseIndicatorIface* pPause);
   bool DrawMaskedImage();
@@ -77,7 +79,13 @@ class CPDF_ImageRenderer {
       CFX_RenderDevice* bitmap_device,
       RetainPtr<CFX_DIBBase> pDIBBase,
       const CFX_Matrix& mtNewMatrix,
-      const FX_RECT& rect) const;
+      const FX_RECT& rect,
+      const FXDIB_ResampleOptions& options) const;
+  // pdfking: how gs tells apart the samples of the image, and of its mask
+  RetainPtr<CPDF_ColorSpace> ImageColorSpace() const;
+  FXDIB_GsSamples ImageGsSamples() const;
+  FXDIB_GsSamples MaskGsSamples() const;
+  void SetGsResampleOptions(bool soft_mask_state);
   const CPDF_RenderOptions& GetRenderOptions() const;
   std::optional<FX_RECT> GetUnitRect() const;
   bool GetDimensionsFromUnitRect(const FX_RECT& rect,

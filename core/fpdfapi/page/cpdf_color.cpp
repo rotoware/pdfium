@@ -149,6 +149,13 @@ std::optional<FX_RGB_STRUCT<float>> CPDF_Color::GetRGB() const {
   return std::nullopt;
 }
 
+pdfium::span<const float> CPDF_Color::GetPatternComponents() const {
+  if (!std::holds_alternative<std::unique_ptr<PatternValue>>(color_data_)) {
+    return {};
+  }
+  return std::get<std::unique_ptr<PatternValue>>(color_data_)->GetComps();
+}
+
 RetainPtr<CPDF_Pattern> CPDF_Color::GetPattern() const {
   DCHECK(IsPattern());
 

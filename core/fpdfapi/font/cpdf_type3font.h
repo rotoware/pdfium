@@ -40,6 +40,10 @@ class CPDF_Type3Font final : public CPDF_SimpleFont {
   void CheckType3FontMetrics();
 
   CFX_Matrix& GetFontMatrix() { return font_matrix_; }
+  // pdfking: the width pdfi gives `charcode` (pdf_text.c pdfi_show_set_params):
+  // its /Widths entry (/MissingWidth off FirstChar..LastChar) through the
+  // FontMatrix, as a float, in text space units
+  float GetGsWidth(uint32_t charcode) const;
 
  private:
   CPDF_Type3Font(CPDF_Document* document,
@@ -58,6 +62,7 @@ class CPDF_Type3Font final : public CPDF_SimpleFont {
   RetainPtr<CPDF_Dictionary> font_resources_;
   std::map<uint32_t, std::unique_ptr<CPDF_Type3Char>> cache_map_;
   std::array<int, 256> char_width_l_ = {};
+  std::array<double, 256> char_width_f_ = {};  // pdfking: /Widths as written
 };
 
 #endif  // CORE_FPDFAPI_FONT_CPDF_TYPE3FONT_H_

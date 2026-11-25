@@ -17,6 +17,8 @@
 
 #include "core/fxcrt/span.h"
 
+#include FT_DRIVER_H
+#include FT_MODULE_H
 #include FT_FONT_FORMATS_H
 #include FT_FREETYPE_H
 #include FT_GLYPH_H

@@ -16,6 +16,7 @@
 #include "core/fxge/dib/cfx_dibitmap.h"
 #include "core/fxge/dib/cfx_imagestretcher.h"
 #include "core/fxge/dib/cfx_imagetransformer.h"
+#include "core/fxge/gs_image.h"
 
 CFX_AggImageRenderer::CFX_AggImageRenderer(
     const RetainPtr<CFX_DIBitmap>& pDevice,
@@ -32,6 +33,17 @@ CFX_AggImageRenderer::CFX_AggImageRenderer(
       alpha_(alpha),
       mask_color_(mask_color),
       rgb_byte_order_(bRgbByteOrder) {
+  // pdfking: its samples where gs places them
+  if (options.gs != FXDIB_GsSamples::kNone) {
+    gs_image::Draw(source, matrix_, options.gs, options.gs_soft_mask,
+                   options.gs_interpolate, options.gs_additive,
+                   pClipRgn ? pClipRgn->GetBox()
+                            : FX_RECT(0, 0, pDevice->GetWidth(),
+                                      pDevice->GetHeight()),
+                   &gs_bitmap_, &gs_left_, &gs_top_);
+    state_ = State::kGs;
+    return;
+  }
   FX_RECT image_rect = matrix_.GetUnitRect().GetOuterRect();
   clip_box_ = pClipRgn
                   ? pClipRgn->GetBox()
@@ -103,6 +115,10 @@ bool CFX_AggImageRenderer::Continue(PauseIndicatorIface* pPause) {
   if (state_ == State::kStretching) {
     return stretcher_->Continue(pPause);
   }
+  if (state_ == State::kGs) {
+    Composite(std::move(gs_bitmap_), gs_left_, gs_top_);
+    return false;
+  }
   if (state_ != State::kTransforming) {
     return false;
   }
@@ -110,9 +126,16 @@ bool CFX_AggImageRenderer::Continue(PauseIndicatorIface* pPause) {
     return true;
   }
 
-  RetainPtr<CFX_DIBitmap> pBitmap = transformer_->DetachBitmap();
+  Composite(transformer_->DetachBitmap(), transformer_->result().left,
+            transformer_->result().top);
+  return false;
+}
+
+void CFX_AggImageRenderer::Composite(RetainPtr<CFX_DIBitmap> pBitmap,
+                                     int left,
+                                     int top) {
   if (!pBitmap || pBitmap->GetBuffer().empty()) {
-    return false;
+    return;
   }
 
   const FX_RECT* clip_rect = nullptr;
@@ -126,16 +149,15 @@ bool CFX_AggImageRenderer::Continue(PauseIndicatorIface* pPause) {
     if (alpha_ != 1.0f) {
       mask_color_ = FXARGB_MUL_ALPHA(mask_color_, FXSYS_roundf(alpha_ * 255));
     }
-    device_->CompositeMask(
-        transformer_->result().left, transformer_->result().top,
-        pBitmap->GetWidth(), pBitmap->GetHeight(), pBitmap, mask_color_, 0, 0,
-        BlendMode::kNormal, clip_rect, clip_mask, rgb_byte_order_);
+    device_->CompositeMask(left, top, pBitmap->GetWidth(),
+                           pBitmap->GetHeight(), pBitmap, mask_color_, 0, 0,
+                           BlendMode::kNormal, clip_rect, clip_mask,
+                           rgb_byte_order_);
   } else {
     pBitmap->MultiplyAlpha(alpha_);
-    device_->CompositeBitmap(
-        transformer_->result().left, transformer_->result().top,
-        pBitmap->GetWidth(), pBitmap->GetHeight(), pBitmap, 0, 0,
-        BlendMode::kNormal, clip_rect, clip_mask, rgb_byte_order_);
+    device_->CompositeBitmap(left, top, pBitmap->GetWidth(),
+                             pBitmap->GetHeight(), pBitmap, 0, 0,
+                             BlendMode::kNormal, clip_rect, clip_mask,
+                             rgb_byte_order_);
   }
-  return false;
 }

@@ -53,7 +53,8 @@ class CPDF_TextRenderer {
                              float font_size,
                              const CFX_Matrix& mtText2Device,
                              FX_ARGB fill_argb,
-                             const CPDF_RenderOptions& options);
+                             const CPDF_RenderOptions& options,
+                             bool gs_positioned = false);
 
   CPDF_TextRenderer() = delete;
   CPDF_TextRenderer(const CPDF_TextRenderer&) = delete;

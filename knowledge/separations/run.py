@@ -17,6 +17,9 @@ import numpy as np
 from PIL import Image
 
 PDFIUM = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../out/native/pdfium_test")
+PROFILES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../.cache/gs/ghostscript-10.08.0/iccprofiles")
+# gs's own share/ghostscript (fonts it substitutes): the gs on PATH
+GSFONTS = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(shutil.which("gs")))), "share/ghostscript")
 BENCH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../out/native/plates_bench")
 DPI, K = 144, 2
 # the color each ink prints on white, full: the composites mix them
@@ -58,7 +61,7 @@ for pdf in sorted(glob.glob(f"{suite}/pdf/*.pdf")):
     os.makedirs(out)
     os.makedirs(work)
     shutil.copy(pdf, f"{out}/0-original-{test}.pdf")  # first in the folder
-    gsargs = ["gs", "-q", "-dBATCH", "-dNOPAUSE", "-dUseFastColor", "-dOverprint=/simulate", f"-r{DPI}"]
+    gsargs = ["gs", "-q", "-dBATCH", "-dNOPAUSE", "-dUseFastColor", "-dOverprint=/simulate", "-dNONATIVEFONTMAP", f"-r{DPI}"]
     subprocess.run(gsargs + ["-sDEVICE=tiffsep", f"-sOutputFile={work}/gs.tif", pdf], check=True)
     # each program's own color render, for reference: they turn ink into RGB
     # their own ways, so they are not compared
@@ -77,11 +80,12 @@ for pdf in sorted(glob.glob(f"{suite}/pdf/*.pdf")):
     inks = {"gs": [], "pdfium": []}
     if one_render:
         # the plates pdfium finds on its own (PDFKING_GetPageInks), as gs does
-        found = subprocess.run([BENCH, pdf, str(DPI), "256", "auto", "--ink"], check=True,
+        found = subprocess.run([BENCH, pdf, str(DPI), "256", "auto", "--ink", f"--profiles={PROFILES}", f"--gsfonts={GSFONTS}"], check=True,
                                capture_output=True, text=True).stdout.split("\n")[:-1]
         summary.append(f"| {test} | inks found | {'same as gs' if sorted(found) == sorted(plates) else 'gs ' + str(plates) + ' pdfium ' + str(found)} | | | |")
 
-        subprocess.run([BENCH, pdf, str(DPI), "256", ",".join(plates), f"--dump={work}/ink", "--ink"],
+        subprocess.run([BENCH, pdf, str(DPI), "256", ",".join(plates), f"--dump={work}/ink", "--ink",
+                        f"--profiles={PROFILES}", f"--gsfonts={GSFONTS}"],
                        check=True, capture_output=True)
     for i, plate in enumerate(plates, 1):
         tif = [p for p in glob.glob(f"{work}/gs(*).tif") if urllib.parse.unquote(os.path.basename(p)[3:-5]) == plate][0]

@@ -36,6 +36,9 @@ class CPDF_PatternCS final : public CPDF_BasedCS {
   std::optional<FX_RGB_STRUCT<float>> GetPatternRGB(
       const PatternValue& value) const;
 
+  // pdfking: the space an uncolored pattern's color is in, null for none
+  const CPDF_ColorSpace* base_cs() const { return base_cs_.Get(); }
+
  private:
   CPDF_PatternCS();
 };

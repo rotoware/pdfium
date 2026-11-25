@@ -123,6 +123,11 @@ inline FX_LAB_STRUCT<float> DecodeLab(FX_LAB_STRUCT<uint8_t> lab) {
   };
 }
 
+// pdfking: the samples of an image as gs tells them apart when it places
+// them on the device (gs_image::Draw): several components (kColor), one
+// (kMono), one bit (kMonobit), an image mask (kMask)
+enum class FXDIB_GsSamples : uint8_t { kNone, kColor, kMono, kMonobit, kMask };
+
 struct FXDIB_ResampleOptions {
   FXDIB_ResampleOptions();
 
@@ -132,6 +137,14 @@ struct FXDIB_ResampleOptions {
   bool bHalftone = false;
   bool bNoSmoothing = false;
   bool bLossy = false;
+  // pdfking: placed as gs places these samples, unless kNone; drawn as in
+  // a soft mask
+  FXDIB_GsSamples gs = FXDIB_GsSamples::kNone;
+  bool gs_soft_mask = false;
+  // pdfking: placed so, smoothed as gs interpolates (/Interpolate), the
+  // samples those of an additive space (else inverted: the ink)
+  bool gs_interpolate = false;
+  bool gs_additive = false;
 };
 
 // See ISO 32000-1:2008 spec, table 136 and 137. The enum values need to be in
@@ -316,6 +329,7 @@ using fxge::FX_RGBA_STRUCT;
 using fxge::FXARGB_GetDIB;
 using fxge::FXARGB_SetDIB;
 using fxge::FXDIB_Format;
+using fxge::FXDIB_GsSamples;
 using fxge::FXDIB_ResampleOptions;
 using fxge::FXSYS_BGR;
 using fxge::FXSYS_GetBValue;
