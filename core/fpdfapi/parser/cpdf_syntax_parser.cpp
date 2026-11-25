@@ -639,9 +639,10 @@ RetainPtr<CPDF_Object> CPDF_SyntaxParser::GetObjectBodyInternal(
         return nullptr;
       }
 
-      // `key` has to be "/X" at the minimum.
+      // pdfking: `key` is "/" at the minimum, the empty name is a name, per ISO
+      // 32000-1:2008 section 7.3.5.
       // `pObj` cannot be a stream, per ISO 32000-1:2008 section 7.3.8.1.
-      if (key.GetLength() > 1 && !pObj->IsStream()) {
+      if (!pObj->IsStream()) {
         dict->SetFor(key.Substr(1), std::move(pObj));
       }
     }

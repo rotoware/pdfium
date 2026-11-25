@@ -1,0 +1,9 @@
+[package]
+name = "pdfium-ffi"
+version = "0.2.0"
+edition = "2021"
+description = "PDFium (pdfking fork) declarations, linked against a prebuilt libpdfium.a"
+license = "BSD-3-Clause"
+repository = "https://github.com/rotoware/pdfium"
+links = "pdfium"
+include = ["Cargo.toml", "build.rs", "src/**"]

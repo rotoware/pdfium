@@ -17,6 +17,7 @@ source_set("page") {
     "cpdf_clippath.h",
     "cpdf_color.cpp",
     "cpdf_color.h",
+    "cpdf_color_pdfking.cpp",  # pdfking
     "cpdf_colorspace.cpp",
     "cpdf_colorspace.h",
     "cpdf_colorstate.cpp",
