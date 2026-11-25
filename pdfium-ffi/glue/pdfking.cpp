@@ -31,6 +31,7 @@
 #include "core/fpdfapi/page/cpdf_clippath.h"
 #include "core/fpdfapi/page/cpdf_path.h"
 #include "core/fxcrt/fx_stream.h"
+#include "core/fxge/dib/cfx_cmyk_to_srgb.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include <cstdlib>
 #include <cstring>
@@ -48,6 +49,7 @@ extern "C"
     void PDFKING_PageObj_SetStrokeRGBA(FPDF_PAGEOBJECT obj, float r, float g, float b, float a);
     void PDFKING_PageObj_SetFillCMYKA(FPDF_PAGEOBJECT obj, float c, float m, float y, float k, float a);
     void PDFKING_PageObj_SetStrokeCMYKA(FPDF_PAGEOBJECT obj, float c, float m, float y, float k, float a);
+    void PDFKING_CmykToRgb(const uint8_t* cmyk, uint8_t* rgb, uint32_t pixels);
     uint32_t PDFKING_Doc_NewSeparation(void* doc, const char* name, float c, float m, float y, float k);
     void PDFKING_PageObj_SetFillSeparation(FPDF_PAGE page, FPDF_PAGEOBJECT obj, uint32_t objnum, float a);
     void PDFKING_PageObj_SetStrokeSeparation(FPDF_PAGE page, FPDF_PAGEOBJECT obj, uint32_t objnum, float a);
@@ -114,6 +116,16 @@ extern "C"
 // =============================================================================
 // CMYK color primitives
 // =============================================================================
+
+// `pixels` CMYK pixels (255 the full ink) to RGB, as pdfium rasters DeviceCMYK
+void PDFKING_CmykToRgb(const uint8_t* cmyk, uint8_t* rgb, uint32_t pixels) {
+    for (uint32_t i = 0; i < pixels; ++i, cmyk += 4, rgb += 3) {
+        FX_RGB_STRUCT<uint8_t> c = AdobeCmykToStandardRgb(cmyk[0], cmyk[1], cmyk[2], cmyk[3]);
+        rgb[0] = c.red;
+        rgb[1] = c.green;
+        rgb[2] = c.blue;
+    }
+}
 
 void PDFKING_PageObj_SetFillRGBA(FPDF_PAGEOBJECT obj, float r, float g, float b, float a) {
     CPDF_PageObject* p = CPDFPageObjectFromFPDFPageObject(obj);

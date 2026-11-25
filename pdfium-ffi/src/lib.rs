@@ -249,6 +249,7 @@ mod raw {
             hints: *mut FX_DOWNLOADHINTS,
         ) -> c_int;
         // pdfking
+        pub fn PDFKING_CmykToRgb(cmyk: *const u8, rgb: *mut u8, pixels: c_uint);
         pub fn PDFKING_PageObj_SetFillRGBA(
             obj: FPDF_PAGEOBJECT,
             r: c_float,
@@ -825,6 +826,14 @@ pub fn FPDFAvail_IsPageAvail(
 }
 
 // --- PDFKING (custom C) ---
+
+/// CMYK pixels (255 the full ink) in RGB, as pdfium rasters DeviceCMYK
+pub fn PDFKING_CmykToRgb(cmyk: &[u8]) -> Vec<u8> {
+    let pixels = cmyk.len() / 4;
+    let mut rgb = alloc::vec![0u8; pixels * 3];
+    unsafe { raw::PDFKING_CmykToRgb(cmyk.as_ptr(), rgb.as_mut_ptr(), pixels as c_uint) }
+    rgb
+}
 
 pub fn PDFKING_PageObj_SetFillRGBA(obj: FPDF_PAGEOBJECT, r: f32, g: f32, b: f32, a: f32) {
     unsafe { raw::PDFKING_PageObj_SetFillRGBA(obj, r, g, b, a) }
