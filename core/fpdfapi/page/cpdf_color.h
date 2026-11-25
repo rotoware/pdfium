@@ -41,6 +41,7 @@ class CPDF_Color {
   uint32_t ComponentCount() const;
   bool IsColorSpaceRGB() const;
   bool IsColorSpaceGray() const;
+  // pdfking: in cpdf_color_pdfking.cpp
   bool IsColorSpaceCMYK() const;
   // The object number of the Separation the color is in, 0 for any other
   // colorspace (or a direct one).

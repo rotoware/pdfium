@@ -4,6 +4,7 @@ extern crate alloc;
 
 use alloc::format;
 use alloc::string::String;
+use alloc::vec::Vec;
 use core::ffi::{c_char, c_double, c_float, c_int, c_uint, c_ulong, c_void};
 
 // --- Opaque pointer types ---
@@ -79,6 +80,9 @@ pub struct FX_DOWNLOADHINTS {
 // --- Raw extern declarations (private) ---
 
 mod raw {
+    type WriteFn = unsafe extern "C" fn(*const u8, u32, *mut core::ffi::c_void) -> core::ffi::c_int;
+    type EntryFn =
+        unsafe extern "C" fn(*const u8, u32, *mut core::ffi::c_void, *mut core::ffi::c_void) -> core::ffi::c_int;
     use super::*;
     extern "C" {
         // pdfium
@@ -340,13 +344,37 @@ mod raw {
             intents: *mut c_uint,
             metadata: *mut c_uint,
         ) -> c_int;
-        pub fn PDFKING_Page_Prune(
-            doc: *mut c_void,
-            page_index: c_uint,
-            printable: c_int,
-            cb: unsafe extern "C" fn(*const u8, u32, *mut c_void) -> c_int,
+        pub fn PDFKING_Page_LoadUnparsed(document: FPDF_DOCUMENT, page_index: c_int) -> FPDF_PAGE;
+        // object primitives
+        pub fn PDFKING_Object_Kind(obj: *mut c_void) -> c_int;
+        pub fn PDFKING_Object_Direct(obj: *mut c_void) -> *mut c_void;
+        pub fn PDFKING_Object_Num(obj: *mut c_void) -> c_uint;
+        pub fn PDFKING_Object_Number(obj: *mut c_void) -> c_double;
+        pub fn PDFKING_Object_Bytes(obj: *mut c_void, cb: WriteFn, ctx: *mut c_void) -> c_int;
+        pub fn PDFKING_Object_Text(obj: *mut c_void, cb: WriteFn, ctx: *mut c_void) -> c_int;
+        pub fn PDFKING_Dict_Get(obj: *mut c_void, key: *const u8, size: c_uint) -> *mut c_void;
+        pub fn PDFKING_Dict_Each(obj: *mut c_void, cb: EntryFn, ctx: *mut c_void);
+        pub fn PDFKING_Array_Size(obj: *mut c_void) -> c_uint;
+        pub fn PDFKING_Array_Get(obj: *mut c_void, index: c_uint) -> *mut c_void;
+        pub fn PDFKING_Stream_Data(obj: *mut c_void, filtered: c_int, cb: WriteFn, ctx: *mut c_void) -> c_int;
+        pub fn PDFKING_Object_Refs(obj: *mut c_void, cb: unsafe extern "C" fn(c_uint, *mut c_void), ctx: *mut c_void);
+        pub fn PDFKING_Doc_PageDict(doc: *mut c_void, page_index: c_uint) -> *mut c_void;
+        pub fn PDFKING_Doc_Root(doc: *mut c_void) -> *mut c_void;
+        pub fn PDFKING_Doc_LayerPrints(doc: *mut c_void, oc: *mut c_void) -> c_int;
+        pub fn PDFKING_Dict_New() -> *mut c_void;
+        pub fn PDFKING_Object_Release(obj: *mut c_void);
+        pub fn PDFKING_Dict_Set(obj: *mut c_void, key: *const u8, size: c_uint, value: *mut c_void);
+        pub fn PDFKING_Dict_SetClone(obj: *mut c_void, key: *const u8, size: c_uint, value: *mut c_void);
+        pub fn PDFKING_Stream_SetData(obj: *mut c_void, data: *const u8, size: c_uint);
+        pub fn PDFKING_Deflater_New(level: c_int) -> *mut c_void;
+        pub fn PDFKING_Deflater_Segment(
+            deflater: *mut c_void,
+            data: *const u8,
+            size: c_uint,
+            cb: WriteFn,
             ctx: *mut c_void,
-        ) -> c_int;
+        ) -> c_uint;
+        pub fn PDFKING_Deflater_Free(deflater: *mut c_void);
         // lcms2
         pub fn cmsCreate_sRGBProfile() -> *mut c_void;
         pub fn cmsOpenProfileFromMem(data: *const c_void, size: c_uint) -> *mut c_void;
@@ -467,6 +495,16 @@ pub fn FPDF_SaveAsCopy(doc: FPDF_DOCUMENT, writer: &mut FPDF_FILEWRITE) -> Resul
 
 pub fn FPDF_LoadPage(doc: FPDF_DOCUMENT, index: i32) -> Result<FPDF_PAGE, String> {
     let page = unsafe { raw::FPDF_LoadPage(doc, index as c_int) };
+    if page.is_null() {
+        last_error("load page")
+    } else {
+        Ok(page)
+    }
+}
+
+/// The page with its content not parsed: for its boxes and rotation only.
+pub fn PDFKING_Page_LoadUnparsed(doc: FPDF_DOCUMENT, index: i32) -> Result<FPDF_PAGE, String> {
+    let page = unsafe { raw::PDFKING_Page_LoadUnparsed(doc, index as c_int) };
     if page.is_null() {
         last_error("load page")
     } else {
@@ -872,12 +910,8 @@ pub fn PDFKING_Page_SetParentRef(obj: *mut c_void, doc: *mut c_void, parent_objn
     unsafe { raw::PDFKING_Page_SetParentRef(obj, doc, parent_objnum as c_uint) }
 }
 
-pub fn PDFKING_Object_Serialize(
-    obj: *mut c_void,
-    cb: unsafe extern "C" fn(*const u8, u32, *mut c_void) -> c_int,
-    ctx: *mut c_void,
-) -> Result<(), String> {
-    if unsafe { raw::PDFKING_Object_Serialize(obj, cb, ctx) } == 0 {
+pub fn PDFKING_Object_Serialize(obj: *mut c_void, out: &mut Vec<u8>) -> Result<(), String> {
+    if unsafe { raw::PDFKING_Object_Serialize(obj, push_bytes, out as *mut _ as *mut c_void) } == 0 {
         return Err("PDFKING_Object_Serialize failed".into());
     }
     Ok(())
@@ -898,14 +932,10 @@ pub fn PDFKING_Object_LayerFlags(obj: *mut c_void) -> Option<i32> {
 
 /// The OCG's /Name
 pub fn PDFKING_Object_LayerName(obj: *mut c_void) -> String {
-    unsafe extern "C" fn push(data: *const u8, size: u32, ctx: *mut c_void) -> c_int {
-        let buf = &mut *(ctx as *mut alloc::vec::Vec<u8>);
-        buf.extend_from_slice(core::slice::from_raw_parts(data, size as usize));
-        size as c_int
-    }
-    let mut buf = alloc::vec::Vec::new();
-    unsafe { raw::PDFKING_Object_LayerName(obj, push, &mut buf as *mut _ as *mut c_void) };
-    String::from_utf8_lossy(&buf).into_owned()
+    String::from_utf8_lossy(&gathered(|cb, ctx| unsafe {
+        raw::PDFKING_Object_LayerName(obj, cb, ctx);
+    }))
+    .into_owned()
 }
 
 /// References to `from[i]` among objects `first..=last` made to `to[i]`
@@ -962,22 +992,190 @@ pub fn PDFKING_Doc_ExportShared(dest: *mut c_void, src: *mut c_void) -> (u32, u3
     (intents as u32, metadata as u32)
 }
 
-/// The page's resources cut to what it draws, with the colors of what is
-/// left: rgb/cmyk/gray/lab and spot colorants by name, each once, sorted;
-/// and whether any of it is transparent. `printable`: what the layers leave
-/// out of print omitted from the page first.
-pub fn PDFKING_Page_Prune(doc: *mut c_void, page_index: u32, printable: bool) -> (alloc::vec::Vec<String>, bool) {
-    unsafe extern "C" fn push(data: *const u8, size: u32, ctx: *mut c_void) -> c_int {
-        let colors = &mut *(ctx as *mut alloc::vec::Vec<String>);
-        // \0 terminated
-        let bytes = core::slice::from_raw_parts(data, size as usize - 1);
-        colors.push(String::from_utf8_lossy(bytes).into_owned());
-        size as c_int
+// --- PDFKING object primitives: a document's objects, one at a time ---
+//
+// An object is a pointer the document owns, null for none: every function
+// takes null and answers nothing.
+
+/// `size` bytes at `data`: none for a null pointer, as C hands an empty one
+unsafe fn bytes<'a>(data: *const u8, size: u32) -> &'a [u8] {
+    if data.is_null() { &[] } else { core::slice::from_raw_parts(data, size as usize) }
+}
+
+/// bytes handed to a callback, gathered
+unsafe extern "C" fn push_bytes(data: *const u8, size: u32, ctx: *mut c_void) -> c_int {
+    let buf = &mut *(ctx as *mut Vec<u8>);
+    buf.extend_from_slice(bytes(data, size));
+    size as c_int
+}
+
+fn gathered(call: impl FnOnce(unsafe extern "C" fn(*const u8, u32, *mut c_void) -> c_int, *mut c_void)) -> Vec<u8> {
+    let mut buf = Vec::new();
+    call(push_bytes, &mut buf as *mut _ as *mut c_void);
+    buf
+}
+
+pub const KIND_BOOLEAN: i32 = 1;
+pub const KIND_NUMBER: i32 = 2;
+pub const KIND_STRING: i32 = 3;
+pub const KIND_NAME: i32 = 4;
+pub const KIND_ARRAY: i32 = 5;
+pub const KIND_DICTIONARY: i32 = 6;
+pub const KIND_STREAM: i32 = 7;
+pub const KIND_NULL: i32 = 8;
+pub const KIND_REFERENCE: i32 = 9;
+
+/// What `obj` is (see `KIND_*`), 0 for none
+pub fn PDFKING_Object_Kind(obj: *mut c_void) -> i32 {
+    unsafe { raw::PDFKING_Object_Kind(obj) as i32 }
+}
+
+/// What a reference refers to, parsed if nothing has read it yet; any other
+/// object itself
+pub fn PDFKING_Object_Direct(obj: *mut c_void) -> *mut c_void {
+    unsafe { raw::PDFKING_Object_Direct(obj) }
+}
+
+/// The number of the object a reference refers to, or of `obj` itself: 0
+/// for a direct one
+pub fn PDFKING_Object_Num(obj: *mut c_void) -> u32 {
+    unsafe { raw::PDFKING_Object_Num(obj) as u32 }
+}
+
+pub fn PDFKING_Object_Number(obj: *mut c_void) -> f64 {
+    unsafe { raw::PDFKING_Object_Number(obj) }
+}
+
+/// A name's or a string's bytes
+pub fn PDFKING_Object_Bytes(obj: *mut c_void) -> Vec<u8> {
+    gathered(|cb, ctx| unsafe {
+        raw::PDFKING_Object_Bytes(obj, cb, ctx);
+    })
+}
+
+/// A text string
+pub fn PDFKING_Object_Text(obj: *mut c_void) -> String {
+    String::from_utf8_lossy(&gathered(|cb, ctx| unsafe {
+        raw::PDFKING_Object_Text(obj, cb, ctx);
+    }))
+    .into_owned()
+}
+
+/// The entry of a dictionary (a stream's, or the one a reference refers
+/// to) as it holds it: a reference stays one
+pub fn PDFKING_Dict_Get(obj: *mut c_void, key: &[u8]) -> *mut c_void {
+    unsafe { raw::PDFKING_Dict_Get(obj, key.as_ptr(), key.len() as c_uint) }
+}
+
+/// Every entry, in the dictionary's order
+pub fn PDFKING_Dict_Each(obj: *mut c_void, mut each: impl FnMut(&[u8], *mut c_void)) {
+    unsafe extern "C" fn entry<F: FnMut(&[u8], *mut c_void)>(
+        key: *const u8,
+        size: u32,
+        value: *mut c_void,
+        ctx: *mut c_void,
+    ) -> c_int {
+        (*(ctx as *mut F))(bytes(key, size), value);
+        1
     }
-    let mut colors = alloc::vec::Vec::new();
-    let transparency =
-        unsafe { raw::PDFKING_Page_Prune(doc, page_index as c_uint, printable as c_int, push, &mut colors as *mut _ as *mut c_void) };
-    (colors, transparency != 0)
+    fn call<F: FnMut(&[u8], *mut c_void)>(obj: *mut c_void, each: &mut F) {
+        unsafe { raw::PDFKING_Dict_Each(obj, entry::<F>, each as *mut F as *mut c_void) }
+    }
+    call(obj, &mut each)
+}
+
+pub fn PDFKING_Array_Size(obj: *mut c_void) -> u32 {
+    unsafe { raw::PDFKING_Array_Size(obj) as u32 }
+}
+
+pub fn PDFKING_Array_Get(obj: *mut c_void, index: u32) -> *mut c_void {
+    unsafe { raw::PDFKING_Array_Get(obj, index as c_uint) }
+}
+
+/// A stream's data, decoded (`filtered`) or as the file holds it
+pub fn PDFKING_Stream_Data(obj: *mut c_void, filtered: bool) -> Vec<u8> {
+    gathered(|cb, ctx| unsafe {
+        raw::PDFKING_Stream_Data(obj, filtered as c_int, cb, ctx);
+    })
+}
+
+/// The objects `obj` refers to, as a page export follows them: not through
+/// /Prev, /First, nor a /Parent other than a popup's
+pub fn PDFKING_Object_Refs(obj: *mut c_void, refs: &mut Vec<u32>) {
+    unsafe extern "C" fn push(objnum: c_uint, ctx: *mut c_void) {
+        (*(ctx as *mut Vec<u32>)).push(objnum as u32)
+    }
+    unsafe { raw::PDFKING_Object_Refs(obj, push, refs as *mut _ as *mut c_void) }
+}
+
+/// The dictionary of page `page_index`
+pub fn PDFKING_Doc_PageDict(doc: *mut c_void, page_index: u32) -> *mut c_void {
+    unsafe { raw::PDFKING_Doc_PageDict(doc, page_index as c_uint) }
+}
+
+/// The catalog
+pub fn PDFKING_Doc_Root(doc: *mut c_void) -> *mut c_void {
+    unsafe { raw::PDFKING_Doc_Root(doc) }
+}
+
+/// Whether what is on the layer `oc` (an OCG or a membership dictionary)
+/// prints
+pub fn PDFKING_Doc_LayerPrints(doc: *mut c_void, oc: *mut c_void) -> bool {
+    unsafe { raw::PDFKING_Doc_LayerPrints(doc, oc) != 0 }
+}
+
+/// A new dictionary, the caller's until [`PDFKING_Object_Release`]
+pub fn PDFKING_Dict_New() -> *mut c_void {
+    unsafe { raw::PDFKING_Dict_New() }
+}
+
+pub fn PDFKING_Object_Release(obj: *mut c_void) {
+    unsafe { raw::PDFKING_Object_Release(obj) }
+}
+
+/// `value` itself set in the dictionary, which holds it from then on too
+pub fn PDFKING_Dict_Set(obj: *mut c_void, key: &[u8], value: *mut c_void) {
+    unsafe { raw::PDFKING_Dict_Set(obj, key.as_ptr(), key.len() as c_uint, value) }
+}
+
+/// A copy of `value` set in the dictionary
+pub fn PDFKING_Dict_SetClone(obj: *mut c_void, key: &[u8], value: *mut c_void) {
+    unsafe { raw::PDFKING_Dict_SetClone(obj, key.as_ptr(), key.len() as c_uint, value) }
+}
+
+/// The stream's data, not encoded
+pub fn PDFKING_Stream_SetData(obj: *mut c_void, data: &[u8]) {
+    unsafe { raw::PDFKING_Stream_SetData(obj, data.as_ptr(), data.len() as c_uint) }
+}
+
+/// Raw deflate, a segment at a time: each ends byte aligned on a sync
+/// flush and is not the last block, so segments join into one stream
+pub struct Deflater(*mut c_void);
+
+impl Deflater {
+    /// zlib's `level`: 1 fastest, 9 smallest
+    pub fn new(level: i32) -> Self {
+        Self(unsafe { raw::PDFKING_Deflater_New(level as c_int) })
+    }
+
+    /// `data` as one segment appended to `out`; its adler32
+    pub fn segment(&self, data: &[u8], out: &mut Vec<u8>) -> u32 {
+        unsafe {
+            raw::PDFKING_Deflater_Segment(
+                self.0,
+                data.as_ptr(),
+                data.len() as c_uint,
+                push_bytes,
+                out as *mut _ as *mut c_void,
+            ) as u32
+        }
+    }
+}
+
+impl Drop for Deflater {
+    fn drop(&mut self) {
+        unsafe { raw::PDFKING_Deflater_Free(self.0) }
+    }
 }
 
 // --- lcms2 (linked from libpdfium.a) ---

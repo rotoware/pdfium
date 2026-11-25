@@ -5,7 +5,6 @@
 #include "public/fpdf_edit.h"
 #include "public/fpdf_ppo.h"
 #include "public/fpdf_transformpage.h"
-#include "constants/annotation_flags.h"
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
@@ -17,6 +16,9 @@
 #include "core/fpdfapi/parser/cpdf_stream_acc.h"
 #include "core/fpdfapi/parser/fpdf_parser_utility.h"
 #include "core/fxcodec/flate/flatemodule.h"
+#include "core/fxcrt/compiler_specific.h"
+#include "core/fxcrt/data_vector.h"
+#include "third_party/zlib/zlib.h"
 #include "core/fpdfapi/edit/cpdf_pageexporter.h"
 #include "core/fpdfapi/edit/cpdf_pageorganizer.h"
 #include "core/fpdfapi/edit/cpdf_npagetooneexporter.h"
@@ -76,7 +78,34 @@ extern "C"
     uint32_t PDFKING_Doc_NewLayer(void* doc, const char* name, int flags);
     void PDFKING_PageObj_SetLayer(FPDF_PAGE page, FPDF_PAGEOBJECT obj, uint32_t objnum);
     int PDFKING_Doc_ExportShared(void* dest, void* src, uint32_t* intents, uint32_t* metadata);
-    int PDFKING_Page_Prune(void* doc, uint32_t page_index, int printable, PDFKING_WriteFn cb, void* ctx);
+    FPDF_PAGE PDFKING_Page_LoadUnparsed(FPDF_DOCUMENT doc, int page_index);
+
+    // --- Object primitives ---
+    typedef int (*PDFKING_EntryFn)(const uint8_t* key, uint32_t size, void* value, void* ctx);
+    typedef void (*PDFKING_RefFn)(uint32_t objnum, void* ctx);
+    int PDFKING_Object_Kind(void* obj);
+    void* PDFKING_Object_Direct(void* obj);
+    uint32_t PDFKING_Object_Num(void* obj);
+    double PDFKING_Object_Number(void* obj);
+    int PDFKING_Object_Bytes(void* obj, PDFKING_WriteFn cb, void* ctx);
+    int PDFKING_Object_Text(void* obj, PDFKING_WriteFn cb, void* ctx);
+    void* PDFKING_Dict_Get(void* obj, const uint8_t* key, uint32_t size);
+    void PDFKING_Dict_Each(void* obj, PDFKING_EntryFn cb, void* ctx);
+    uint32_t PDFKING_Array_Size(void* obj);
+    void* PDFKING_Array_Get(void* obj, uint32_t index);
+    int PDFKING_Stream_Data(void* obj, int filtered, PDFKING_WriteFn cb, void* ctx);
+    void PDFKING_Object_Refs(void* obj, PDFKING_RefFn cb, void* ctx);
+    void* PDFKING_Doc_PageDict(void* doc, uint32_t page_index);
+    void* PDFKING_Doc_Root(void* doc);
+    int PDFKING_Doc_LayerPrints(void* doc, void* oc);
+    void* PDFKING_Dict_New();
+    void PDFKING_Object_Release(void* obj);
+    void PDFKING_Dict_Set(void* obj, const uint8_t* key, uint32_t size, void* value);
+    void PDFKING_Dict_SetClone(void* obj, const uint8_t* key, uint32_t size, void* value);
+    void PDFKING_Stream_SetData(void* obj, const uint8_t* data, uint32_t size);
+    void* PDFKING_Deflater_New(int level);
+    uint32_t PDFKING_Deflater_Segment(void* deflater, const uint8_t* data, uint32_t size, PDFKING_WriteFn cb, void* ctx);
+    void PDFKING_Deflater_Free(void* deflater);
 
 #ifdef __cplusplus
 }
@@ -267,8 +296,8 @@ int PDFKING_Doc_ExportPage(void* dest, void* src, uint32_t page_index, int inser
 }
 
 void* PDFKING_Doc_GetObject(void* doc, uint32_t objnum) {
-    RetainPtr<CPDF_Object> obj = static_cast<CPDF_Document*>(doc)->GetMutableIndirectObject(objnum);
-    return obj.Get();
+    // parsed if nothing has read it yet
+    return static_cast<CPDF_Document*>(doc)->GetOrParseIndirectObject(objnum).Get();
 }
 
 // Returns: 0=null/skip, 1=Page, 2=Pages/Catalog(skip), 3=other(write)
@@ -571,423 +600,210 @@ int PDFKING_Doc_ExportShared(void* dest, void* src, uint32_t* intents, uint32_t*
 }
 
 // =============================================================================
-// Preflight: a page's resources cut to what it draws, the colors of that and
-// whether it needs transparency
+// Object primitives: a document's objects as they are read, one at a time —
+// what Rust walks, rewrites and writes out (split, the plates)
 // =============================================================================
 
-typedef std::set<ByteString> Names;
-
-// What preflight finds in what a page draws: the colors, and whether any of
-// it is transparent — drawn flattened (gs -dNOTRANSPARENCY) it would change
-struct Found {
-    Names colors;
-    bool transparency = false;
-    // printing: what the layers leave out of print is omitted from the content
-    RetainPtr<CPDF_OCContext> print;
-};
-
-static const char* ColorantColor(const ByteString& colorant) {
-    if (colorant == "Cyan" || colorant == "Magenta" || colorant == "Yellow" || colorant == "Black") return "cmyk";
-    return nullptr;
+static const CPDF_Object* Object(void* obj) {
+    return static_cast<const CPDF_Object*>(obj);
 }
 
-static void AddColorant(const ByteString& colorant, Names& colors) {
-    if (colorant.IsEmpty() || colorant == "None") return;
-    const char* process = ColorantColor(colorant);
-    colors.insert(process ? ByteString(process) : colorant);
+// the dictionary `obj` is, or a stream's, mutable
+static CPDF_Dictionary* MutableDict(void* obj) {
+    CPDF_Object* o = static_cast<CPDF_Object*>(obj);
+    if (!o) return nullptr;
+    if (CPDF_Stream* stream = o->AsMutableStream()) return stream->GetMutableDict().Get();
+    return o->AsMutableDictionary();
 }
 
-// a color space by name, the inline image abbreviations included
-static void AddColorName(const ByteString& name, Names& colors) {
-    if (name == "DeviceRGB" || name == "CalRGB" || name == "RGB") colors.insert("rgb");
-    if (name == "DeviceCMYK" || name == "CMYK") colors.insert("cmyk");
-    if (name == "DeviceGray" || name == "CalGray" || name == "G") colors.insert("gray");
-    if (name == "Lab") colors.insert("lab");
+static ByteStringView Key(const uint8_t* key, uint32_t size) {
+    // SAFETY: the caller's slice
+    return ByteStringView(UNSAFE_BUFFERS(pdfium::span<const uint8_t>(key, size)));
 }
 
-// The inks a color space paints with: process families as rgb/cmyk/gray/lab,
-// spot colorants by their own name.
-static void AddColorSpace(RetainPtr<const CPDF_Object> space, Names& colors, int depth = 0) {
-    space = space ? space->GetDirect() : nullptr;
-    if (!space || depth > 4) return;
-    if (const CPDF_Array* array = space->AsArray()) {
-        ByteString family = array->GetByteStringAt(0);
-        if (family == "ICCBased") {
-            RetainPtr<const CPDF_Stream> profile = array->GetStreamAt(1);
-            int n = profile ? profile->GetDict()->GetIntegerFor("N") : 0;
-            if (n == 1) colors.insert("gray");
-            if (n == 3) colors.insert("rgb");
-            if (n == 4) colors.insert("cmyk");
-        } else if (family == "Indexed" || family == "I" || family == "Pattern") {
-            AddColorSpace(array->GetDirectObjectAt(1), colors, depth + 1);
-        } else if (family == "Separation") {
-            AddColorant(array->GetByteStringAt(1), colors);
-        } else if (family == "DeviceN") {
-            if (RetainPtr<const CPDF_Array> colorants = array->GetArrayAt(1))
-                for (size_t i = 0; i < colorants->size(); ++i) AddColorant(colorants->GetByteStringAt(i), colors);
-        } else {
-            AddColorSpace(array->GetDirectObjectAt(0), colors, depth + 1);
-        }
-        return;
-    }
-    AddColorName(space->GetString(), colors);
+// CPDF_Object::Type: 1 boolean, 2 number, 3 string, 4 name, 5 array,
+// 6 dictionary, 7 stream, 8 null, 9 reference; 0 for no object
+int PDFKING_Object_Kind(void* obj) {
+    return obj ? static_cast<int>(Object(obj)->GetType()) : 0;
 }
 
-// What a content owner — the page, a form, a tiling pattern — draws: the
-// resource names its content uses and the colors it sets by operator
-struct Drawn {
-    Names names;
-    Names colors;
-};
+// what a reference refers to, parsed if nothing has read it yet; any other
+// object itself
+void* PDFKING_Object_Direct(void* obj) {
+    return obj ? const_cast<CPDF_Object*>(Object(obj)->GetDirect().Get()) : nullptr;
+}
 
-// One pass over a content stream: the /Name operands (the resources it may
-// use) and the colors set by operator (rg/k/g, device names, inline images).
-// Strings, comments and inline image data are skipped, never read as tokens.
-// With `print`, every operator is weighed as it ends: one inside a marked
-// section on a layer off print — /OC /<name> BDC ... EMC, the name one of
-// `resources`' /Properties — or a Do of an XObject off print, is omitted from the
-// stream, operands and all, and what it names or paints is not counted. The
-// stream is written back only when something was omitted. A section is omitted whole,
-// so whatever state it sets goes with it, as when it does not print.
-static void ScanContent(const CPDF_Stream* stream, const CPDF_Dictionary* resources, const CPDF_OCContext* print,
-                        Drawn& drawn) {
-    if (!stream) return;
+// the number of the object a reference refers to, or of `obj` itself: 0 for
+// a direct one
+uint32_t PDFKING_Object_Num(void* obj) {
+    if (!obj) return 0;
+    const CPDF_Reference* ref = Object(obj)->AsReference();
+    return ref ? ref->GetRefObjNum() : Object(obj)->GetObjNum();
+}
+
+double PDFKING_Object_Number(void* obj) {
+    return obj ? Object(obj)->GetNumber() : 0;
+}
+
+// a name's or a string's bytes
+int PDFKING_Object_Bytes(void* obj, PDFKING_WriteFn cb, void* ctx) {
+    if (!obj) return 0;
+    ByteString bytes = Object(obj)->GetString();
+    return cb(bytes.unsigned_str(), static_cast<uint32_t>(bytes.GetLength()), ctx) >= 0 ? 1 : 0;
+}
+
+// a text string as UTF-8
+int PDFKING_Object_Text(void* obj, PDFKING_WriteFn cb, void* ctx) {
+    if (!obj) return 0;
+    ByteString text = Object(obj)->GetUnicodeText().ToUTF8();
+    return cb(text.unsigned_str(), static_cast<uint32_t>(text.GetLength()), ctx) >= 0 ? 1 : 0;
+}
+
+// the entry of a dictionary (a stream's, or the one a reference refers to)
+// as it holds it: a reference stays one
+void* PDFKING_Dict_Get(void* obj, const uint8_t* key, uint32_t size) {
+    RetainPtr<const CPDF_Dictionary> dict = obj ? Object(obj)->GetDict() : nullptr;
+    return dict ? const_cast<CPDF_Object*>(dict->GetObjectFor(Key(key, size)).Get()) : nullptr;
+}
+
+// every entry, in the dictionary's order
+void PDFKING_Dict_Each(void* obj, PDFKING_EntryFn cb, void* ctx) {
+    RetainPtr<const CPDF_Dictionary> dict = obj ? Object(obj)->GetDict() : nullptr;
+    if (!dict) return;
+    CPDF_DictionaryLocker locker(dict);
+    for (const auto& [key, value] : locker)
+        cb(key.unsigned_str(), static_cast<uint32_t>(key.GetLength()), value.Get(), ctx);
+}
+
+uint32_t PDFKING_Array_Size(void* obj) {
+    const CPDF_Array* array = obj ? Object(obj)->AsArray() : nullptr;
+    return array ? static_cast<uint32_t>(array->size()) : 0;
+}
+
+void* PDFKING_Array_Get(void* obj, uint32_t index) {
+    const CPDF_Array* array = obj ? Object(obj)->AsArray() : nullptr;
+    return array && index < array->size() ? const_cast<CPDF_Object*>(array->GetObjectAt(index).Get()) : nullptr;
+}
+
+// a stream's data, decoded (`filtered`) or as the file holds it
+int PDFKING_Stream_Data(void* obj, int filtered, PDFKING_WriteFn cb, void* ctx) {
+    const CPDF_Stream* stream = obj ? Object(obj)->AsStream() : nullptr;
+    if (!stream) return 0;
     auto acc = pdfium::MakeRetain<CPDF_StreamAcc>(pdfium::WrapRetain(stream));
-    acc->LoadAllDataFiltered();
+    if (filtered) acc->LoadAllDataFiltered();
+    else acc->LoadAllDataRaw();
     pdfium::span<const uint8_t> data = acc->GetSpan();
-    const size_t n = data.size();
-    bool inline_image = false;
-    // the operator being read: where its operands start, the names among them
-    size_t start_op = 0;
-    std::vector<ByteString> names;
-    // per marked section open, whether it is omitted: the innermost says
-    std::vector<bool> marks;
-    std::vector<uint8_t> kept;
-    bool omitted_any = false;
-    auto printed = [&](const char* category, const ByteString& name, const char* key) {
-        RetainPtr<const CPDF_Dictionary> dict = resources ? resources->GetDictFor(category) : nullptr;
-        RetainPtr<const CPDF_Dictionary> entry = dict ? dict->GetDictFor(name.AsStringView()) : nullptr;
-        if (entry && key) entry = entry->GetDictFor(key);
-        return !entry || print->CheckOCGDictVisible(entry.Get());
-    };
-    // the operator `op` ending at `end`: kept, or omitted
-    auto weigh = [&](ByteStringView op, size_t end) {
-        bool omit = false;
-        if (print) {
-            bool hidden = !marks.empty() && marks.back();
-            if (op == "BDC" || op == "BMC") {
-                omit = hidden || (op == "BDC" && names.size() >= 2 && names[0] == "OC" && !printed("Properties", names[1], nullptr));
-                marks.push_back(omit);
-            } else if (op == "EMC") {
-                omit = hidden;
-                if (!marks.empty()) marks.pop_back();
-            } else {
-                omit = hidden || (op == "Do" && !names.empty() && !printed("XObject", names.back(), "OC"));
-            }
-        }
-        if (!omit) {
-            if (op == "rg" || op == "RG") drawn.colors.insert("rgb");
-            else if (op == "k" || op == "K") drawn.colors.insert("cmyk");
-            else if (op == "g" || op == "G") drawn.colors.insert("gray");
-            // an inline image's own abbreviations too
-            bool image = op == "EI";
-            for (ByteString& name : names) {
-                if (name.First(6) == "Device" || (image && (name == "RGB" || name == "CMYK" || name == "G")))
-                    AddColorName(name, drawn.colors);
-                drawn.names.insert(std::move(name));
-            }
-            if (print) kept.insert(kept.end(), data.begin() + start_op, data.begin() + end);
-        }
-        omitted_any |= omit;
-        names.clear();
-        start_op = end;
-    };
-    size_t i = 0;
-    while (i < n) {
-        uint8_t c = data[i];
-        if (PDFCharIsWhitespace(c)) {
-            ++i;
-        } else if (c == '%') {
-            while (i < n && data[i] != '\r' && data[i] != '\n') ++i;
-        } else if (c == '(') {
-            for (int depth = 1; ++i < n && depth;) {
-                if (data[i] == '\\') ++i;
-                else if (data[i] == '(') ++depth;
-                else if (data[i] == ')') --depth;
-            }
-        } else if (c == '<' && i + 1 < n && data[i + 1] != '<') {
-            while (i < n && data[i] != '>') ++i;
-            ++i;
-        } else if (c == '/') {
-            size_t start = ++i;
-            while (i < n && !PDFCharIsWhitespace(data[i]) && !PDFCharIsDelimiter(data[i])) ++i;
-            ByteString name = PDF_NameDecode(ByteStringView(data.subspan(start, i - start)));
-            names.push_back(std::move(name));
-        } else if (PDFCharIsDelimiter(c)) {
-            ++i;
-        } else {
-            size_t start = i;
-            while (i < n && !PDFCharIsWhitespace(data[i]) && !PDFCharIsDelimiter(data[i])) ++i;
-            ByteStringView op(data.subspan(start, i - start));
-            // operands: numbers and the keywords that are values
-            if ((c >= '0' && c <= '9') || c == '+' || c == '-' || c == '.' || op == "true" || op == "false" || op == "null")
-                continue;
-            if (op == "BI") inline_image = true;
-            // an inline image is one operator, BI to EI: weighed whole below
-            if (inline_image && op != "ID") continue;
-            if (op == "ID") {
-                // binary up to an EI standing on its own
-                inline_image = false;
-                for (++i; i + 1 < n; ++i) {
-                    if (data[i] == 'E' && data[i + 1] == 'I' && PDFCharIsWhitespace(data[i - 1]) &&
-                        (i + 2 == n || PDFCharIsWhitespace(data[i + 2]) || PDFCharIsDelimiter(data[i + 2]))) {
-                        i += 2;
-                        break;
-                    }
-                }
-                op = "EI";
-            }
-            weigh(op, i);
-        }
-    }
-    // trailing operands with no operator: kept as they were
-    if (print) kept.insert(kept.end(), data.begin() + start_op, data.end());
-    for (ByteString& name : names) drawn.names.insert(std::move(name));
-    if (omitted_any) const_cast<CPDF_Stream*>(stream)->SetDataAndRemoveFilter(kept);
+    return cb(data.data(), static_cast<uint32_t>(data.size()), ctx) >= 0 ? 1 : 0;
 }
 
-// a page's /Contents: one stream or an array of them
-static void ScanContents(const CPDF_Object* contents, const CPDF_Dictionary* resources, const CPDF_OCContext* print,
-                         Drawn& drawn) {
-    if (!contents) return;
-    if (const CPDF_Array* array = contents->AsArray()) {
-        for (size_t i = 0; i < array->size(); ++i) ScanContent(array->GetStreamAt(i).Get(), resources, print, drawn);
-    } else {
-        ScanContent(contents->AsStream(), resources, print, drawn);
-    }
-}
-
-static const char* const kResourceCategories[] = {
-    "XObject", "Font", "ColorSpace", "ExtGState", "Pattern", "Shading", "Properties"};
-
-// The standard blend modes (ISO 32000-2 Tables 134, 135)
-static bool BlendMode(const ByteString& mode) {
-    for (const char* known : {"Normal", "Compatible", "Multiply", "Screen", "Overlay", "Darken", "Lighten",
-                              "ColorDodge", "ColorBurn", "HardLight", "SoftLight", "Difference", "Exclusion",
-                              "Hue", "Saturation", "Color", "Luminosity"})
-        if (mode == known) return true;
-    return false;
-}
-
-// An ExtGState, or an annotation, drawing transparent, as gs pdf_check.c
-// tells: a soft mask other than /None, an opacity other than 1, a blend mode
-// other than Normal or Compatible — of an array, the first standard one, as
-// a reader picks it (ISO 32000-2 8.4.5).
-static bool TransparentState(const CPDF_Dictionary* dict) {
-    if (!dict) return false;
-    RetainPtr<const CPDF_Object> smask = dict->GetDirectObjectFor("SMask");
-    if (smask && (smask->IsDictionary() || (smask->IsName() && smask->GetString() != "None"))) return true;
-    for (const char* opacity : {"CA", "ca"})
-        if (dict->KeyExist(opacity) && dict->GetFloatFor(opacity) != 1) return true;
-    RetainPtr<const CPDF_Object> blend = dict->GetDirectObjectFor("BM");
-    ByteString mode = blend ? blend->GetString() : ByteString();
-    if (const CPDF_Array* modes = blend ? blend->AsArray() : nullptr) {
-        for (size_t i = 0; i < modes->size() && !BlendMode(mode); ++i) mode = modes->GetByteStringAt(i);
-    }
-    return BlendMode(mode) && mode != "Normal" && mode != "Compatible";
-}
-
-// What the resources `names` uses add to `found` (forms and tiling patterns
-// are owners of their own). Colors: color spaces, images, shadings and
-// shading patterns. Transparency, as gs pdf_check.c tells: a graphics state
-// (a pattern's own too), an image soft-masked — an /SMask, or alpha in its
-// JPX data — or a form that is a group. A hard /Mask draws the same
-// flattened; so does the page's own group, the page's alone.
-static void AddResources(const CPDF_Dictionary* resources, const Names& names, Found& found) {
-    auto used = [&](const char* category, auto fn) {
-        RetainPtr<const CPDF_Dictionary> dict = resources->GetDictFor(category);
-        if (!dict) return;
-        for (const ByteString& key : dict->GetKeys())
-            if (names.count(key)) fn(dict->GetDirectObjectFor(key.AsStringView()));
-    };
-    auto shading = [&](RetainPtr<const CPDF_Object> object) {
-        const CPDF_Dictionary* dict = object ? object->GetDict() : nullptr;
-        if (dict) AddColorSpace(dict->GetObjectFor("ColorSpace"), found.colors);
-    };
-    used("ColorSpace", [&](RetainPtr<const CPDF_Object> space) { AddColorSpace(space, found.colors); });
-    used("Shading", shading);
-    used("ExtGState", [&](RetainPtr<const CPDF_Object> state) {
-        found.transparency |= state && TransparentState(state->GetDict());
-    });
-    used("Pattern", [&](RetainPtr<const CPDF_Object> pattern) {
-        const CPDF_Dictionary* dict = pattern ? pattern->GetDict() : nullptr;
-        if (!dict) return;
-        if (dict->GetIntegerFor("PatternType") == 2) shading(dict->GetDirectObjectFor("Shading"));
-        found.transparency |= TransparentState(dict->GetDictFor("ExtGState").Get());
-    });
-    used("XObject", [&](RetainPtr<const CPDF_Object> xobject) {
-        const CPDF_Dictionary* dict = xobject ? xobject->GetDict() : nullptr;
-        if (!dict) return;
-        ByteString subtype = dict->GetNameFor("Subtype");
-        if (subtype == "Form") found.transparency |= !!dict->GetDictFor("Group");
-        if (subtype != "Image") return;
-        // stencil masks paint with the fill color, set by operator
-        if (!dict->GetBooleanFor("ImageMask", false)) AddColorSpace(dict->GetObjectFor("ColorSpace"), found.colors);
-        found.transparency |= dict->KeyExist("SMask") || dict->GetFloatFor("SMaskInData") != 0;
-    });
-}
-
-// `resources` keeping only what `names` draws, or null to keep it as is
-// (Type3 fonts without their own resources draw from these).
-static RetainPtr<CPDF_Dictionary> PrunedResources(const CPDF_Dictionary* resources, const Names& names) {
-    if (RetainPtr<const CPDF_Dictionary> fonts = resources->GetDictFor("Font")) {
-        for (const ByteString& key : fonts->GetKeys()) {
-            RetainPtr<const CPDF_Dictionary> font = fonts->GetDictFor(key.AsStringView());
-            if (names.count(key) && font && font->GetNameFor("Subtype") == "Type3" && !font->KeyExist("Resources"))
-                return nullptr;
-        }
-    }
-
-    auto pruned = pdfium::MakeRetain<CPDF_Dictionary>();
-    CPDF_DictionaryLocker locker(resources);
-    for (const auto& [category, value] : locker) {
-        bool prunable = false;
-        for (const char* c : kResourceCategories) prunable |= category == c;
-        RetainPtr<const CPDF_Dictionary> dict = prunable ? resources->GetDictFor(category.AsStringView()) : nullptr;
-        if (!dict) {
-            pruned->SetFor(category, value->Clone());
-            continue;
-        }
-        auto kept = pruned->SetNewFor<CPDF_Dictionary>(category);
-        CPDF_DictionaryLocker entries(dict);
-        for (const auto& [name, entry] : entries) {
-            // /DefaultRGB, /DefaultCMYK, /DefaultGray apply to every device color
-            if (names.count(name) || (category == "ColorSpace" && name.First(7) == "Default"))
-                kept->SetFor(name, entry->Clone());
-        }
-    }
-    return pruned;
-}
-
-static void PruneOwner(CPDF_Dictionary* owner, const CPDF_Object* contents, RetainPtr<const CPDF_Dictionary> resources,
-                       Found& found, std::set<const CPDF_Object*>& seen);
-
-// `contents` scanned into `drawn`, and through `resources` the forms,
-// tiling patterns and Type3 fonts it draws, each once (`seen`): one with
-// resources of its own is an owner in turn (a Type3 font's left whole); one
-// without draws from `resources` and is scanned into this very `drawn`,
-// which may name more.
-static void Walk(const CPDF_Object* contents, const CPDF_Dictionary* resources, Drawn& drawn, Found& found,
-                 std::set<const CPDF_Object*>& seen) {
-    ScanContents(contents, resources, found.print.Get(), drawn);
-    if (!resources) return;
-    for (bool grew = true; grew;) {
-        grew = false;
-        for (const char* category : {"XObject", "Pattern"}) {
-            RetainPtr<const CPDF_Dictionary> dict = resources->GetDictFor(category);
-            if (!dict) continue;
-            CPDF_DictionaryLocker locker(dict);
-            for (const auto& [name, entry] : locker) {
-                if (!drawn.names.count(name)) continue;
-                RetainPtr<CPDF_Stream> stream = ToStream(entry->GetMutableDirect());
-                if (!stream || !seen.insert(stream.Get()).second) continue;
-                RetainPtr<CPDF_Dictionary> dict = stream->GetMutableDict();
-                // images are streams too: only forms and tiling patterns have content
-                bool content = category == ByteStringView("XObject") ? dict->GetNameFor("Subtype") == "Form"
-                                                                      : dict->GetIntegerFor("PatternType") == 1;
-                if (!content) continue;
-                if (RetainPtr<const CPDF_Dictionary> own = dict->GetDictFor("Resources")) {
-                    PruneOwner(dict.Get(), stream.Get(), own, found, seen);
-                    continue;
-                }
-                size_t before = drawn.names.size();
-                Walk(stream.Get(), resources, drawn, found, seen);
-                grew |= drawn.names.size() != before;
-            }
-        }
-        // Type3 glyphs are content too, every one: drawn from the font's own
-        // resources, kept whole, or from these
-        RetainPtr<const CPDF_Dictionary> fonts = resources->GetDictFor("Font");
-        if (!fonts) continue;
-        CPDF_DictionaryLocker locker(fonts);
-        for (const auto& [name, entry] : locker) {
-            if (!drawn.names.count(name)) continue;
-            RetainPtr<const CPDF_Dictionary> font = ToDictionary(entry->GetDirect());
-            if (!font || font->GetNameFor("Subtype") != "Type3" || !seen.insert(font.Get()).second) continue;
-            RetainPtr<const CPDF_Dictionary> procs = font->GetDictFor("CharProcs");
-            if (!procs) continue;
-            RetainPtr<const CPDF_Dictionary> own = font->GetDictFor("Resources");
-            Drawn glyphs;
-            size_t before = drawn.names.size();
-            CPDF_DictionaryLocker glyph_locker(procs);
-            for (const auto& [glyph, proc] : glyph_locker)
-                Walk(proc->GetDirect().Get(), own ? own.Get() : resources, own ? glyphs : drawn, found, seen);
-            grew |= drawn.names.size() != before;
-            if (!own) continue;
-            found.colors.insert(glyphs.colors.begin(), glyphs.colors.end());
-            AddResources(own.Get(), glyphs.names, found);
+static void Refs(const CPDF_Object* obj, PDFKING_RefFn cb, void* ctx, int depth) {
+    if (!obj || depth > 64) return;
+    if (const CPDF_Reference* ref = obj->AsReference()) {
+        cb(ref->GetRefObjNum(), ctx);
+    } else if (const CPDF_Array* array = obj->AsArray()) {
+        for (size_t i = 0; i < array->size(); ++i) Refs(array->GetObjectAt(i).Get(), cb, ctx, depth + 1);
+    } else if (RetainPtr<const CPDF_Dictionary> dict = obj->GetDict()) {
+        bool popup = dict->GetNameFor("Subtype") == "Popup";
+        CPDF_DictionaryLocker locker(dict);
+        for (const auto& [key, value] : locker) {
+            if (key == "Prev" || key == "First" || (key == "Parent" && !popup)) continue;
+            Refs(value.Get(), cb, ctx, depth + 1);
         }
     }
 }
 
-// `owner`'s resources cut to what its content draws — a fresh dict on the
-// owner, the shared one untouched — and the colors and transparency of what
-// is left
-static void PruneOwner(CPDF_Dictionary* owner, const CPDF_Object* contents, RetainPtr<const CPDF_Dictionary> resources,
-                       Found& found, std::set<const CPDF_Object*>& seen) {
-    Drawn drawn;
-    Walk(contents, resources.Get(), drawn, found, seen);
-    found.colors.insert(drawn.colors.begin(), drawn.colors.end());
-    if (!resources) return;
-    AddResources(resources.Get(), drawn.names, found);
-    if (RetainPtr<CPDF_Dictionary> pruned = PrunedResources(resources.Get(), drawn.names))
-        owner->SetFor("Resources", std::move(pruned));
+// The objects `obj` refers to, as a page export follows them (see
+// CPDF_PageOrganizer::UpdateReference): not through /Prev, /First, nor a
+// /Parent other than a popup's — an outline's siblings, a widget's form
+// field, the page tree, none of which come along with a page
+void PDFKING_Object_Refs(void* obj, PDFKING_RefFn cb, void* ctx) {
+    Refs(Object(obj), cb, ctx, 0);
 }
 
-// The page walked once, before anything copies it: its resources and those
-// of every form and tiling pattern it draws — and of the appearances of the
-// annotations it prints — cut to what is used, so an export never copies
-// the rest, and the colors drawn with — rgb/cmyk/gray/lab, spot colorants by
-// name — handed to `cb` once each, \0 terminated. 1 when any of it is
-// transparent.
-int PDFKING_Page_Prune(void* doc, uint32_t page_index, int printable, PDFKING_WriteFn cb, void* ctx) {
-    CPDF_Document* d = static_cast<CPDF_Document*>(doc);
-    RetainPtr<CPDF_Dictionary> page = d->GetMutablePageDictionary(static_cast<int>(page_index));
-    if (!page) return 0;
-    // resources may be inherited from the page tree
-    RetainPtr<const CPDF_Dictionary> resources;
-    RetainPtr<const CPDF_Dictionary> node = page;
-    for (int depth = 0; node && !resources && depth < 64; ++depth, node = node->GetDictFor("Parent"))
-        resources = node->GetDictFor("Resources");
-    Found found;
-    if (printable) found.print = pdfium::MakeRetain<CPDF_OCContext>(d, CPDF_OCContext::kPrint);
-    std::set<const CPDF_Object*> seen;
-    PruneOwner(page.Get(), page->GetDirectObjectFor("Contents").Get(), resources, found, seen);
-    // printed annotations: their own opacity, and their normal appearance —
-    // the one their /AS picks when there are several
-    if (RetainPtr<CPDF_Array> annots = page->GetMutableArrayFor("Annots")) {
-        for (size_t i = 0; i < annots->size(); ++i) {
-            RetainPtr<CPDF_Dictionary> annot = annots->GetMutableDictAt(i);
-            if (!annot) continue;
-            uint32_t flags = static_cast<uint32_t>(annot->GetIntegerFor("F"));
-            ByteString subtype = annot->GetNameFor("Subtype");
-            // as gs prints: 3D ones even without the Print flag
-            bool printed = (flags & pdfium::annotation_flags::kPrint) || subtype == "3D";
-            if (!printed || (flags & pdfium::annotation_flags::kHidden)) continue;
-            // gs draws a Highlight with no appearance multiplied, and counts
-            // every one transparent
-            found.transparency |= subtype == "Highlight" || TransparentState(annot.Get());
-            RetainPtr<CPDF_Dictionary> ap = annot->GetMutableDictFor("AP");
-            RetainPtr<CPDF_Object> normal = ap ? ap->GetMutableDirectObjectFor("N") : nullptr;
-            if (normal && normal->IsDictionary())
-                normal = normal->AsMutableDictionary()->GetMutableDirectObjectFor(annot->GetNameFor("AS").AsStringView());
-            RetainPtr<CPDF_Stream> stream = ToStream(normal);
-            if (!stream || !seen.insert(stream.Get()).second) continue;
-            RetainPtr<CPDF_Dictionary> dict = stream->GetMutableDict();
-            PruneOwner(dict.Get(), stream.Get(), dict->GetDictFor("Resources"), found, seen);
-        }
-    }
-    for (const ByteString& color : found.colors)
-        cb(color.unsigned_str(), static_cast<uint32_t>(color.GetLength() + 1), ctx);
-    return found.transparency;
+void* PDFKING_Doc_PageDict(void* doc, uint32_t page_index) {
+    return static_cast<CPDF_Document*>(doc)->GetMutablePageDictionary(static_cast<int>(page_index)).Get();
+}
+
+void* PDFKING_Doc_Root(void* doc) {
+    return const_cast<CPDF_Dictionary*>(static_cast<CPDF_Document*>(doc)->GetRoot());
+}
+
+// whether what is on the layer (an OCG or a membership dictionary) prints
+int PDFKING_Doc_LayerPrints(void* doc, void* oc) {
+    const CPDF_Dictionary* dict = oc ? Object(oc)->AsDictionary() : nullptr;
+    if (!dict) return 1;
+    auto print = pdfium::MakeRetain<CPDF_OCContext>(static_cast<CPDF_Document*>(doc), CPDF_OCContext::kPrint);
+    return print->CheckOCGDictVisible(dict) ? 1 : 0;
+}
+
+// --- written in place: a page cut to what it draws before it is embedded ---
+
+// a new dictionary, the caller's until PDFKING_Object_Release
+void* PDFKING_Dict_New() {
+    return pdfium::MakeRetain<CPDF_Dictionary>().Leak();
+}
+
+void PDFKING_Object_Release(void* obj) {
+    RetainPtr<CPDF_Object> owned;
+    owned.Unleak(static_cast<CPDF_Object*>(obj));
+}
+
+// `value` itself set in the dictionary, which holds it from then on too
+void PDFKING_Dict_Set(void* obj, const uint8_t* key, uint32_t size, void* value) {
+    if (CPDF_Dictionary* dict = MutableDict(obj))
+        dict->SetFor(ByteString(Key(key, size)), pdfium::WrapRetain(static_cast<CPDF_Object*>(value)));
+}
+
+// a copy of `value` set in the dictionary
+void PDFKING_Dict_SetClone(void* obj, const uint8_t* key, uint32_t size, void* value) {
+    if (CPDF_Dictionary* dict = MutableDict(obj)) dict->SetFor(ByteString(Key(key, size)), Object(value)->Clone());
+}
+
+// the stream's data, not encoded
+void PDFKING_Stream_SetData(void* obj, const uint8_t* data, uint32_t size) {
+    CPDF_Stream* stream = obj ? static_cast<CPDF_Object*>(obj)->AsMutableStream() : nullptr;
+    // SAFETY: the caller's slice
+    if (stream) stream->SetDataAndRemoveFilter(UNSAFE_BUFFERS(pdfium::span<const uint8_t>(data, size)));
+}
+
+// --- deflate ---
+
+// Raw deflate at `level`, a segment at a time: each ends byte aligned on a
+// sync flush and is not the last block, so segments join into one stream
+void* PDFKING_Deflater_New(int level) {
+    z_stream* z = new z_stream();
+    deflateInit2(z, level, Z_DEFLATED, -15, 8, Z_DEFAULT_STRATEGY);
+    return z;
+}
+
+// `data` as one segment, handed to `cb`; its adler32
+uint32_t PDFKING_Deflater_Segment(void* deflater, const uint8_t* data, uint32_t size, PDFKING_WriteFn cb, void* ctx) {
+    z_stream* z = static_cast<z_stream*>(deflater);
+    deflateReset(z);
+    DataVector<uint8_t> out(deflateBound(z, size) + 16);
+    z->next_in = const_cast<Bytef*>(data);
+    z->avail_in = size;
+    z->next_out = out.data();
+    z->avail_out = static_cast<uInt>(out.size());
+    deflate(z, Z_SYNC_FLUSH);
+    cb(out.data(), static_cast<uint32_t>(out.size() - z->avail_out), ctx);
+    return static_cast<uint32_t>(adler32(1, data, size));
+}
+
+void PDFKING_Deflater_Free(void* deflater) {
+    z_stream* z = static_cast<z_stream*>(deflater);
+    deflateEnd(z);
+    delete z;
+}
+
+
+// the page, its content not parsed: its boxes and rotation read, nothing drawn
+FPDF_PAGE PDFKING_Page_LoadUnparsed(FPDF_DOCUMENT document, int page_index) {
+    CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+    if (!doc || page_index < 0 || page_index >= doc->GetPageCount()) return nullptr;
+    RetainPtr<CPDF_Dictionary> dict = doc->GetMutablePageDictionary(page_index);
+    if (!CPDF_Page::IsValidPageDictLoose(dict)) return nullptr;
+    auto page = pdfium::MakeRetain<CPDF_Page>(doc, std::move(dict));
+    page->AddPageImageCache();
+    return FPDFPageFromIPDFPage(page.Leak());
 }

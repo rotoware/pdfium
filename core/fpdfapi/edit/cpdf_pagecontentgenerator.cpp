@@ -15,6 +15,7 @@
 #include <utility>
 
 #include "constants/page_object.h"
+#include "core/fpdfapi/edit/cpdf_pagecontentgenerator_pdfking.h"  // pdfking
 #include "core/fpdfapi/edit/cpdf_pagecontentmanager.h"
 #include "core/fpdfapi/edit/cpdf_stringarchivestream.h"
 #include "core/fpdfapi/font/cpdf_truetypefont.h"
@@ -61,62 +62,20 @@ constexpr const char* kResourceKeys[] = {"ExtGState", "Font", "XObject"};
 using ResourcesMap = std::map<ByteString, std::set<ByteString>>;
 
 // Returns whether it wrote to `buf` or not.
-// Returns: 0 = none, 1 = RGB, 2 = CMYK, 3 = Gray
-// pdfking: a Separation color, "/CS<n> cs <tint> scn" (CS/SCN to stroke).
-// Returns whether it wrote to `buf` or not.
-bool WriteSeparationToStream(fxcrt::ostringstream& buf, const CPDF_Color* color, bool stroke) {
-  uint32_t objnum = color ? color->GetSeparationObjNum() : 0;
-  if (!objnum) {
+bool WriteColorToStream(fxcrt::ostringstream& buf, const CPDF_Color* color) {
+  if (!color || (!color->IsColorSpaceRGB() && !color->IsColorSpaceGray())) {
     return false;
-  }
-  pdfium::span<const float> components = color->GetComponents();
-  if (components.empty()) {
-    return false;
-  }
-  buf << "/CS" << objnum << (stroke ? " CS " : " cs ");
-  WriteFloat(buf, components[0]) << (stroke ? " SCN " : " scn ");
-  return true;
-}
-
-int WriteColorToStream(fxcrt::ostringstream& buf, const CPDF_Color* color) {
-  if (!color) {
-    return 0;
-  }
-
-  if (color->IsColorSpaceCMYK()) {
-    pdfium::span<const float> components = color->GetComponents();
-    if (components.size() < 4) {
-      return 0;
-    }
-    WriteFloat(buf, components[0]) << " ";
-    WriteFloat(buf, components[1]) << " ";
-    WriteFloat(buf, components[2]) << " ";
-    WriteFloat(buf, components[3]);
-    return 2;
-  }
-
-  if (color->IsColorSpaceGray()) {
-    pdfium::span<const float> components = color->GetComponents();
-    if (components.empty()) {
-      return 0;
-    }
-    WriteFloat(buf, components[0]);
-    return 3;
-  }
-
-  if (!color->IsColorSpaceRGB()) {
-    return 0;
   }
 
   std::optional<FX_RGB_STRUCT<float>> colors = color->GetRGB();
   if (!colors.has_value()) {
-    return 0;
+    return false;
   }
 
   WriteFloat(buf, colors.value().red) << " ";
   WriteFloat(buf, colors.value().green) << " ";
   WriteFloat(buf, colors.value().blue);
-  return 1;
+  return true;
 }
 
 // Balances the "q" operator ProcessGraphics() emitted.
@@ -859,21 +818,15 @@ void CPDF_PageContentGenerator::ProcessPath(fxcrt::ostringstream* buf,
 void CPDF_PageContentGenerator::ProcessGraphics(fxcrt::ostringstream* buf,
                                                 CPDF_PageObject* pPageObj) {
   *buf << "q ";
-  int fill_result = WriteSeparationToStream(*buf, pPageObj->color_state().GetFillColor(), false) ? 4 : WriteColorToStream(*buf, pPageObj->color_state().GetFillColor());
-  if (fill_result == 1) {
+  if (!pdfking::WriteColorInItsSpace(  // pdfking
+          *buf, pPageObj->color_state().GetFillColor(), /*stroke=*/false) &&
+      WriteColorToStream(*buf, pPageObj->color_state().GetFillColor())) {
     *buf << " rg ";
-  } else if (fill_result == 2) {
-    *buf << " k ";
-  } else if (fill_result == 3) {
-    *buf << " g ";
   }
-  int stroke_result = WriteSeparationToStream(*buf, pPageObj->color_state().GetStrokeColor(), true) ? 4 : WriteColorToStream(*buf, pPageObj->color_state().GetStrokeColor());
-  if (stroke_result == 1) {
+  if (!pdfking::WriteColorInItsSpace(  // pdfking
+          *buf, pPageObj->color_state().GetStrokeColor(), /*stroke=*/true) &&
+      WriteColorToStream(*buf, pPageObj->color_state().GetStrokeColor())) {
     *buf << " RG ";
-  } else if (stroke_result == 2) {
-    *buf << " K ";
-  } else if (stroke_result == 3) {
-    *buf << " G ";
   }
   float line_width = pPageObj->graph_state().GetLineWidth();
   if (line_width != 1.0f) {
@@ -959,7 +912,8 @@ void CPDF_PageContentGenerator::ProcessGraphics(fxcrt::ostringstream* buf,
 
 void CPDF_PageContentGenerator::ProcessDefaultGraphics(
     fxcrt::ostringstream* buf) {
-  *buf << "0 0 0 RG 0 0 0 rg 1 w "
+  // pdfking: the initial color, as the spec has it: black in DeviceGray
+  *buf << "0 G 0 g 1 w "
        << static_cast<int>(CFX_GraphStateData::LineCap::kButt) << " J "
        << static_cast<int>(CFX_GraphStateData::LineJoin::kMiter) << " j\n";
   default_graphics_name_ = GetOrCreateDefaultGraphics();

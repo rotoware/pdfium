@@ -94,7 +94,7 @@ class CPDF_ColorSpace : public Retainable, public Observable {
 
   uint32_t ComponentCount() const;
   Family GetFamily() const { return family_; }
-  // The array the colorspace was loaded from, null for a stock one.
+  // pdfking: the array the colorspace was loaded from, null for a stock one.
   const CPDF_Array* GetArray() const { return array_.Get(); }
   bool IsSpecial() const {
     return GetFamily() == Family::kSeparation ||
